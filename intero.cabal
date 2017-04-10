@@ -63,6 +63,13 @@ executable intero
     GhciTypes
     GhciInfo
     GhciFind
+    Djinn
+    Djinn.HCheck
+    Djinn.HTypes
+    Djinn.Help
+    Djinn.LJT
+    Djinn.LJTFormula
+    Djinn.REPL
   build-depends:
     base < 5,
     array,
@@ -77,7 +84,9 @@ executable intero
     transformers,
     syb,
     containers,
-    time
+    time,
+    mtl,
+    pretty
 
   if impl(ghc>=8.0.1)
     build-depends:

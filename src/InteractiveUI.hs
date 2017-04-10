@@ -25,6 +25,8 @@ module InteractiveUI (
 
 #include "HsVersions.h"
 
+import Djinn
+
 -- Intero
 #if __GLASGOW_HASKELL__ >= 800
 import           GHCi
