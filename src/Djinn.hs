@@ -3,7 +3,7 @@
 -- Copyright (c) 2005 Lennart Augustsson
 -- See LICENSE for licensing details.
 --
-module Djinn () where
+module Djinn where
 import Data.Char(isAlpha, isSpace)
 import Data.List(sortBy, nub, intersperse)
 import Data.Ratio
@@ -24,27 +24,27 @@ import Djinn.Help
 version :: String
 version = "version 2011-07-23"
 
--- main :: IO ()
--- main = do
---     args <- getArgs
---     let decodeOptions (('-':cs) : as) st = decodeOption cs >>= \f -> decodeOptions as (f False st)
---         decodeOptions (('+':cs) : as) st = decodeOption cs >>= \f -> decodeOptions as (f True  st)
---         decodeOptions as st = return (as, st)
---         decodeOption cs = case [ set | (cmd, _, _, set) <- options, isPrefix cs cmd ] of
---                           [] -> do usage; exitWith (ExitFailure 1)
---                           set : _ -> return set
---     (args', state) <- decodeOptions args startState
---     case args' of
---         [] -> repl (hsGenRepl state)
---         _ -> loop state args'
---               where loop _ [] = return ()
---                     loop s (a:as) = do
---                         putStrLn $ "-- loading file " ++ a
---                         (q, s') <- loadFile s a
---                         if q then
---                             return ()
---                          else
---                             loop s' as
+oldmain :: IO ()
+oldmain = do
+    args <- getArgs
+    let decodeOptions (('-':cs) : as) st = decodeOption cs >>= \f -> decodeOptions as (f False st)
+        decodeOptions (('+':cs) : as) st = decodeOption cs >>= \f -> decodeOptions as (f True  st)
+        decodeOptions as st = return (as, st)
+        decodeOption cs = case [ set | (cmd, _, _, set) <- options, isPrefix cs cmd ] of
+                          [] -> do usage; exitWith (ExitFailure 1)
+                          set : _ -> return set
+    (args', state) <- decodeOptions args startState
+    case args' of
+        [] -> repl (hsGenRepl state)
+        _ -> loop state args'
+              where loop _ [] = return ()
+                    loop s (a:as) = do
+                        putStrLn $ "-- loading file " ++ a
+                        (q, s') <- loadFile s a
+                        if q then
+                            return ()
+                         else
+                            loop s' as
 
 usage :: IO ()
 usage = putStrLn "Usage: djinn [option ...] [file ...]"
@@ -117,9 +117,20 @@ exit _s = do
 type Context = (HSymbol, [HType])
 type ClassDef = (HSymbol, ([HSymbol], [Method]))
 
-data Cmd = Help Bool | Quit | Add HSymbol HType | Query HSymbol [Context] HType | Del HSymbol | Load HSymbol | Noop | Env |
-           Type (HSymbol, ([HSymbol], HType, HKind)) | Set (State -> State) | Clear | Class ClassDef |
-           QueryInstance [Context] HSymbol [HType]
+data Cmd
+  = Help Bool
+  | Quit
+  | Add HSymbol HType
+  | Query HSymbol [Context] HType
+  | Del HSymbol
+  | Load HSymbol
+  | Noop
+  | Env
+  | Type (HSymbol, ([HSymbol], HType, HKind))
+  | Set (State -> State)
+  | Clear
+  | Class ClassDef
+  | QueryInstance [Context] HSymbol [HType]
 
 pCmd :: ReadP Cmd
 pCmd = do

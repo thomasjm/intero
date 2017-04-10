@@ -25,7 +25,7 @@ module InteractiveUI (
 
 #include "HsVersions.h"
 
-import Djinn
+import qualified Djinn
 
 -- Intero
 #if __GLASGOW_HASKELL__ >= 800
@@ -250,7 +250,8 @@ ghciCommands = [
   ("all-types", keepGoing' allTypes,            noCompletion),
   ("uses",      keepGoing' findAllUses,         noCompletion),
   ("loc-at",    keepGoing' locationAt,          noCompletion),
-  ("complete-at", keepGoing' completeAt,          noCompletion),
+  ("complete-at", keepGoing' completeAt,        noCompletion),
+  ("djinn",     keepGoing' djinnType,           completeExpression),
   ("trace",     keepGoing traceCmd,             completeExpression),
   ("undef",     keepGoing undefineMacro,        completeMacro),
   ("unset",     keepGoing unsetOptions,         completeSetOptions)
@@ -320,6 +321,7 @@ defFullHelpText =
   "   :add [*]<module> ...        add module(s) to the current target set\n" ++
   "   :browse[!] [[*]<mod>]       display the names defined by module <mod>\n" ++
   "                               (!: more details; *: all top-level names)\n" ++
+  "   :djinn <type>               suggest code for the given type using djinn\n" ++
   "   :extensions <mod>           display the extensions enabled by module <mod>\n" ++
   "   :cd <dir>                   change directory to <dir>\n" ++
   "   :cmd <expr>                 run the commands returned by <expr>::IO String\n" ++
@@ -1693,6 +1695,15 @@ typeOfExpr str
   $ do
        ty <- GHC.exprType str
        printForUser $ sep [text str, nest 2 (dcolon <+> pprTypeForUser ty)]
+
+--------------------------------------------------------------------------------
+-- :djinn
+
+djinnType :: String -> InputT GHCi ()
+djinnType str =
+  handleSourceError GHC.printException
+    (liftIO (do (bool, state) <- Djinn.eval Djinn.startState ("? " ++ str)
+                return ()))
 
 -----------------------------------------------------------------------------
 -- :type-at
