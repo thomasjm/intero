@@ -25,7 +25,12 @@ module InteractiveUI (
 
 #include "HsVersions.h"
 
+import           Data.Generics.Text
+import           Data.List
+import           Data.Maybe
 import qualified Djinn
+import qualified Djinn.HTypes as Djinn
+import           TyCon
 
 -- Intero
 #if __GLASGOW_HASKELL__ >= 800
@@ -1701,9 +1706,41 @@ typeOfExpr str
 
 djinnType :: String -> InputT GHCi ()
 djinnType str =
-  handleSourceError GHC.printException
-    (liftIO (do (bool, state) <- Djinn.eval Djinn.startState ("? " ++ str)
-                return ()))
+  handleSourceError
+    GHC.printException
+    (do module' <- guessCurrentModule "browse"
+        tyThings <- browseModuleTypes False module' False
+        dflags <- getDynFlags
+        liftIO
+          (do let datatypes =
+                    mapMaybe
+                      (\x ->
+                         case x of
+                           ATyCon thing
+                             | (not . isAbstractTyCon) (thing) &&
+                                 all (not . isUnboxed) (tyConDataCons thing) &&
+                                 all GHC.isVanillaDataCon (tyConDataCons thing) &&
+                                 not
+                                   (isClassTyCon thing ||
+                                    isPrimTyCon thing ||
+                                    null (tyConDataCons thing)) ->
+                               Just
+                                 ( showPpr dflags (tyConName thing) -- e.g. Maybe
+                                 , ( map (showPpr dflags) (tyConTyVars thing) -- e.g. ["a"]
+                                   , Djinn.HTUnion -- e.g. [("Nothing",[]),("Just",[a])]
+                                       (map
+                                          (\con -> (showPpr dflags con, []))
+                                          (tyConDataCons thing))
+                                   , undefined))
+                             where isUnboxed = isSuffixOf "#" . showPpr dflags
+                           ACoAxiom thing -> Nothing
+                           AnId thing -> Nothing
+                           AConLike thing -> Nothing
+                           _ -> Nothing)
+                      tyThings
+              (bool, state) <-
+                Djinn.eval (Djinn.startState datatypes) ("? " ++ str)
+              return ()))
 
 -----------------------------------------------------------------------------
 -- :type-at
@@ -2146,6 +2183,75 @@ browseModule bang modl exports_only = do
         -- package modules.  When it works, we can do this:
         --        $$ vcat (map GHC.pprInstance (GHC.modInfoInstances mod_info))
 
+browseModuleTypes :: Bool -> Module -> Bool -> InputT GHCi [TyThing]
+browseModuleTypes bang modl exports_only = do
+  -- :browse reports qualifiers wrt current context
+  unqual <- GHC.getPrintUnqual
+
+  mb_mod_info <- GHC.getModuleInfo modl
+  case mb_mod_info of
+    Nothing -> throwGhcException (CmdLineError ("unknown module: " ++
+                                GHC.moduleNameString (GHC.moduleName modl)))
+    Just mod_info -> do
+        dflags <- getDynFlags
+        let names
+               | exports_only = GHC.modInfoExports mod_info
+               | otherwise    = GHC.modInfoTopLevelScope mod_info
+                                `orElse` []
+
+                -- sort alphabetically name, but putting locally-defined
+                -- identifiers first. We would like to improve this; see #1799.
+            sorted_names = loc_sort local ++ occ_sort external
+                where
+                (local,external) = ASSERT( all isExternalName names )
+                                   partition ((==modl) . nameModule) names
+                occ_sort = sortBy (compare `on` nameOccName)
+                -- try to sort by src location. If the first name in our list
+                -- has a good source location, then they all should.
+                loc_sort ns
+                      | n:_ <- ns, isGoodSrcSpan (nameSrcSpan n)
+                      = sortBy (compare `on` nameSrcSpan) ns
+                      | otherwise
+                      = occ_sort ns
+
+        mb_things <- mapM GHC.lookupName sorted_names
+        let filtered_things = filterOutChildren (\t -> t) (catMaybes mb_things)
+
+        rdr_env <- GHC.getGRE
+
+        let things | bang      = catMaybes mb_things
+                   | otherwise = filtered_things
+            pretty | bang      = pprTyThing
+                   | otherwise = pprTyThingInContext
+
+            labels  [] = text "-- not currently imported"
+            labels  l  = text $ intercalate "\n" $ map qualifier l
+
+            qualifier :: Maybe [ModuleName] -> String
+            qualifier  = maybe "-- defined locally"
+                             (("-- imported via "++) . intercalate ", "
+                               . map GHC.moduleNameString)
+            importInfo = RdrName.getGRE_NameQualifier_maybes rdr_env
+
+            modNames :: [[Maybe [ModuleName]]]
+            modNames   = map (importInfo . GHC.getName) things
+
+            -- annotate groups of imports with their import modules
+            -- the default ordering is somewhat arbitrary, so we group
+            -- by header and sort groups; the names themselves should
+            -- really come in order of source appearance.. (trac #1799)
+            annotate mts = concatMap (\(m,ts)->labels m:ts)
+                         $ sortBy cmpQualifiers $ grp mts
+              where cmpQualifiers =
+                      compare `on` (map (fmap (map moduleNameFS)) . fst)
+            grp []            = []
+            grp mts@((m,_):_) = (m,map snd g) : grp ng
+              where (g,ng) = partition ((==m).fst) mts
+
+        return things
+        -- ToDo: modInfoInstances currently throws an exception for
+        -- package modules.  When it works, we can do this:
+        --        $$ vcat (map GHC.pprInstance (GHC.modInfoInstances mod_info))
 
 -----------------------------------------------------------------------------
 -- :module

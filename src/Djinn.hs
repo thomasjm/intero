@@ -24,27 +24,27 @@ import Djinn.Help
 version :: String
 version = "version 2011-07-23"
 
-oldmain :: IO ()
-oldmain = do
-    args <- getArgs
-    let decodeOptions (('-':cs) : as) st = decodeOption cs >>= \f -> decodeOptions as (f False st)
-        decodeOptions (('+':cs) : as) st = decodeOption cs >>= \f -> decodeOptions as (f True  st)
-        decodeOptions as st = return (as, st)
-        decodeOption cs = case [ set | (cmd, _, _, set) <- options, isPrefix cs cmd ] of
-                          [] -> do usage; exitWith (ExitFailure 1)
-                          set : _ -> return set
-    (args', state) <- decodeOptions args startState
-    case args' of
-        [] -> repl (hsGenRepl state)
-        _ -> loop state args'
-              where loop _ [] = return ()
-                    loop s (a:as) = do
-                        putStrLn $ "-- loading file " ++ a
-                        (q, s') <- loadFile s a
-                        if q then
-                            return ()
-                         else
-                            loop s' as
+-- oldmain :: IO ()
+-- oldmain = do
+--     args <- getArgs
+--     let decodeOptions (('-':cs) : as) st = decodeOption cs >>= \f -> decodeOptions as (f False st)
+--         decodeOptions (('+':cs) : as) st = decodeOption cs >>= \f -> decodeOptions as (f True  st)
+--         decodeOptions as st = return (as, st)
+--         decodeOption cs = case [ set | (cmd, _, _, set) <- options, isPrefix cs cmd ] of
+--                           [] -> do usage; exitWith (ExitFailure 1)
+--                           set : _ -> return set
+--     (args', state) <- decodeOptions args startState
+--     case args' of
+--         [] -> repl (hsGenRepl state)
+--         _ -> loop state args'
+--               where loop _ [] = return ()
+--                     loop s (a:as) = do
+--                         putStrLn $ "-- loading file " ++ a
+--                         (q, s') <- loadFile s a
+--                         if q then
+--                             return ()
+--                          else
+--                             loop s' as
 
 usage :: IO ()
 usage = putStrLn "Usage: djinn [option ...] [file ...]"
@@ -67,8 +67,8 @@ data State = State {
     }
     deriving (Show)
 
-startState :: State
-startState = State {
+startState :: [(String, ([String], HType, a))] -> State
+startState datatypes = State {
     synonyms = syns,
     classes = clss,
     axioms = [],
@@ -77,14 +77,14 @@ startState = State {
     debug = False,
     cutOff = 200
     }
- where syns = either (const $ error "Bad initial environment") id $ htCheckEnv $ reverse [
-        ("()",     ([],        HTUnion [("()",[])],                         undefined)),
-        ("Either", (["a","b"], HTUnion [("Left", [a]), ("Right", [b])],     undefined)),
-        ("Maybe",  (["a"],     HTUnion [("Nothing", []), ("Just", [a])],    undefined)),
-        ("Bool",   ([],        HTUnion [("False", []), ("True", [])],       undefined)),
-        ("Void",   ([],        HTUnion [],                                  undefined)),
-        ("Not",    (["x"],     htNot "x",                                   undefined))
-        ]
+ where syns = either (const $ error "Bad initial environment") id $ htCheckEnv $ reverse ([
+         ("()",     ([],        HTUnion [("()",[])],                         undefined)),
+         ("Either", (["a","b"], HTUnion [("Left", [a]), ("Right", [b])],     undefined)),
+         ("Maybe",  (["a"],     HTUnion [("Nothing", []), ("Just", [a])],    undefined)),
+         ("Bool",   ([],        HTUnion [("False", []), ("True", [])],       undefined)),
+         ("Void",   ([],        HTUnion [],                                  undefined)),
+         ("Not",    (["x"],     htNot "x",                                   undefined))
+         ] ++ datatypes)
        clss = [("Eq", (["a"], [("==", a `HTArrow` (a `HTArrow` HTCon "Bool"))])),
                ("Monad", (["m"], [("return", a `HTArrow` ma),
                                   (">>=", ma `HTArrow` ((a `HTArrow` mb) `HTArrow` mb))]))
@@ -92,7 +92,6 @@ startState = State {
        a = HTVar "a"
        b = HTVar "b"
        m = HTVar "m"
-
 
 inIt :: State -> IO (String, State)
 inIt state = do
@@ -168,7 +167,7 @@ runCmd s (Add i t) =
     Left msg -> do putStrLn $ "Error: " ++ msg; return (False, s)
     Right _ -> return (False, s { axioms = (i, t) : filter ((/= i) . fst) (axioms s) })
 runCmd _ Clear =
-    return (False, startState)
+    return (False, startState [])
 runCmd s (Del i) =
     return (False, s { axioms   = filter ((i /=) . fst) (axioms s)
                      , synonyms = filter ((i /=) . fst) (synonyms s)
