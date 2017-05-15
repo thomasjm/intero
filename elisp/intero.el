@@ -616,6 +616,10 @@ running context across :load/:reloads in Intero."
            (temp-file (intero-localize-path (intero-temp-file-name)))
            (mod-time (nth 5 (file-attributes temp-file))))
       (unless (intero-check-reuse-last-results mod-time cont)
+        ;; Set -fbyte-code if we're doing a watch expression. We
+        ;; restore -fobject-code further below.
+        (when (intero-watch-buffer-visible-p)
+          (intero-async-call 'backend ":set -fbyte-code"))
         (intero-async-call
          'backend
          (concat ":l " temp-file)
@@ -645,7 +649,10 @@ running context across :load/:reloads in Intero."
                                       (concat ":m + "
                                               (replace-regexp-in-string modules "," ""))
                                       nil
-                                      (lambda (_st _)))))))))))))
+                                      (lambda (_st _))))
+                 ;; Restore -fobject-code after building, if it was disabled
+                 (when (intero-watch-buffer-visible-p)
+                   (intero-async-call 'backend ":set -fobject-code")))))))))))
 
 
 (flycheck-define-generic-checker 'intero
@@ -2977,6 +2984,91 @@ Equivalent to 'warn', but label the warning as coming from intero."
                      'isearch
                    'isearch-lazy-highlight))
     (overlay-put o 'intero-highlight-uses-mode-highlight t)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Watch expressions
+
+(defvar intero-watch-last-buffer nil
+  "The last intero buffer that was type-checked.")
+
+(add-hook 'flycheck-after-syntax-check-hook 'intero-watch-hook)
+
+(define-derived-mode intero-watch-mode fundamental-mode "Intero-Watch"
+  "Watch expression mode for intero."
+  (when (and (not (eq major-mode 'fundamental-mode))
+             (eq this-command 'intero-watch-mode))
+    (error "You probably meant to run: M-x intero-watch"))
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (propertize "Watch expression:\n\n" 'face 'font-lock-comment-face))
+    (insert "> ()\n")
+    (forward-char -1))
+  (run-with-idle-timer 0.5 nil 'intero-watch-refresh)
+  (add-hook 'after-change-functions 'intero-watch-changed nil t))
+
+(defun intero-watch-hook ()
+  "Hook to update the last intero buffer."
+  (when (and intero-mode
+             (eq major-mode 'haskell-mode)
+             (get-buffer "*Intero-Watch*"))
+    (setq intero-watch-last-buffer (current-buffer))
+    (run-with-idle-timer 0 nil 'intero-watch-checked (current-buffer))))
+
+(defun intero-watch-checked (buffer)
+  (when (intero-watch-buffer-visible-p)
+    (with-current-buffer buffer
+      (with-current-buffer (intero-watch-buffer)
+        (intero-watch-refresh)))))
+
+(defun intero-watch-changed (&rest ignore)
+  (interactive)
+  (run-with-idle-timer 0.5 nil 'intero-watch-refresh))
+
+(defun intero-watch-refresh ()
+  "Refresh the current buffer."
+  (interactive)
+  (when intero-watch-last-buffer
+    (save-excursion
+      (goto-char (point-min))
+      (when (search-forward-regexp "^> " nil t 1)
+        (let ((line (buffer-substring (point) (line-end-position)))
+              (watch-buffer (current-buffer)))
+          (with-current-buffer intero-watch-last-buffer
+            (intero-async-call
+             'backend
+             line
+             watch-buffer
+             (lambda (watch-buffer reply)
+               (with-current-buffer watch-buffer
+                 (let ((inhibit-modification-hooks t))
+                   (save-excursion
+                     (goto-char (point-min))
+                     (when (search-forward-regexp "^> " nil t 1)
+                       (let ((line (buffer-substring (point) (line-end-position))))
+                         (goto-char (line-end-position))
+                         (newline)
+                         (delete-region (point) (point-max))
+                         (insert reply))))))))))))))
+
+(defun intero-watch-buffer-visible-p ()
+  (let ((buffer (get-buffer-create "*Intero-Watch*")))
+    (when buffer
+      (get-buffer-window buffer))))
+
+(defun intero-watch-buffer ()
+  (let ((buffer (get-buffer-create "*Intero-Watch*")))
+    (with-current-buffer buffer
+      (unless (eq major-mode 'intero-watch-mode)
+        (intero-watch-mode)
+        (setq intero-watch-source-buffer)))
+    buffer))
+
+(defun intero-watch ()
+  "Watch an expression."
+  (interactive)
+  (let ((buffer (intero-watch-buffer)))
+    (flycheck-buffer)
+    (switch-to-buffer-other-window buffer)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
