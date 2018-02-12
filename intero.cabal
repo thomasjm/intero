@@ -65,6 +65,7 @@ executable intero
     GhciTypes
     GhciInfo
     GhciFind
+    Completion
     Paths_intero
   build-depends:
     base < 5,

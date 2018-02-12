@@ -51,6 +51,7 @@ import qualified GhciMonad ( args, runStmt )
 import           GhciMonad hiding ( args, runStmt )
 import           GhciTags
 import           Debugger
+import qualified Completion
 
 -- The GHC interface
 import Data.IORef
@@ -268,6 +269,7 @@ ghciCommands = [
   ("kind",      keepGoing' (kindOfType False),  completeIdentifier),
   ("kind!",     keepGoing' (kindOfType True),   completeIdentifier),
   ("load",      keepGoingPaths loadModule_,     completeHomeModuleOrFile),
+  ("fill",      keepGoing' fillCmd,             noCompletion),
   ("list",      keepGoing' listCmd,             noCompletion),
   ("module",    keepGoing moduleCmd,            completeSetModule),
   ("move",      keepGoing' moveCommand,         completeFilename),
@@ -297,6 +299,43 @@ ghciCommands = [
   ]
   where lifted m = \str -> lift (m stdout str)
 
+fillCmd :: String -> InputT GHCi ()
+fillCmd =
+  withFillInput
+    (\name line ->
+       lift
+         (do loaded <-
+               getModuleGraph >>= filterM (GHC.isLoaded . GHC.ms_mod_name)
+             case find ((== name) . moduleNameString . GHC.ms_mod_name) loaded of
+               Just module' -> do
+                 case GHC.ms_location module' of
+                   ModLocation {ml_hs_file = Just moduleFilePath} -> do
+                     parsedModule <- GHC.parseModule module'
+                     moduleString <- liftIO (readFile moduleFilePath)
+                     case Completion.declarationByLine
+                            (Completion.ModuleSource moduleString)
+                            parsedModule
+                            (Completion.LineNumber line) of
+                       Nothing ->
+                         liftIO
+                           (putStrLn
+                              ("Unable to locate declaration containing line " ++
+                               show line))
+                       Just declaration ->
+                         liftIO
+                           (print ("Got declaration: " ++ show declaration))
+                   _ ->
+                     liftIO
+                       (putStrLn ("Couldn't find filename for module: " ++ name))
+               Nothing ->
+                 liftIO
+                   (putStrLn ("Couldn't find loaded module with name: " ++ name))))
+
+withFillInput :: (String -> Int -> InputT GHCi ()) -> String -> InputT GHCi ()
+withFillInput cont input =
+  case words input of
+    [name, read -> line] -> cont name line
+    _ -> liftIO (putStrLn "Invalid :fill call. Should be :fill <module name> <line number>")
 
 readOnlyCommands :: [(String, Handle -> String -> GHCi ())]
 readOnlyCommands =
