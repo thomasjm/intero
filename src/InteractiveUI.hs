@@ -310,20 +310,24 @@ fillCmd =
                Just module' -> do
                  case GHC.ms_location module' of
                    ModLocation {ml_hs_file = Just moduleFilePath} -> do
-                     parsedModule <- GHC.parseModule module'
+                     typecheckedModule <- GHC.parseModule module' >>= GHC.typecheckModule
                      moduleString <- liftIO (readFile moduleFilePath)
                      case Completion.declarationByLine
                             (Completion.ModuleSource moduleString)
-                            parsedModule
+                            typecheckedModule
                             (Completion.LineNumber line) of
                        Nothing ->
                          liftIO
                            (putStrLn
                               ("Unable to locate declaration containing line " ++
                                show line))
-                       Just declaration ->
+                       Just declaration -> do
                          liftIO
                            (print ("Got declaration: " ++ show declaration))
+                         liftIO
+                           (print
+                              ("Holes: " ++
+                               show (Completion.declarationHoles declaration)))
                    _ ->
                      liftIO
                        (putStrLn ("Couldn't find filename for module: " ++ name))

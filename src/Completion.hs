@@ -9,6 +9,8 @@ module Completion
   , DeclarationCompletion(..)
   , Substitution(..)
   , Hole (..)
+  , ModuleSource(..)
+  , LineNumber(..)
   ) where
 
 import Bag
@@ -16,6 +18,7 @@ import Data.Generics
 import Data.List
 import Data.Maybe
 import GHC
+import Name
 import SrcLoc
 
 --------------------------------------------------------------------------------
@@ -24,7 +27,7 @@ import SrcLoc
 -- | All the context we need to generate completions for a declaration
 -- in a module.
 data Declaration = Declaration
-  { declarationBind :: !(HsBindLR RdrName RdrName)
+  { declarationBind :: !(HsBindLR Name Name)
     -- ^ The actual declaration, which we use to find holes and
     -- substitute them with candidate replacements.
   , declarationSource :: !String
@@ -34,10 +37,12 @@ data Declaration = Declaration
   , declarationParsedModule :: !ParsedModule
    -- ^ The declaration belongs to a parsed module which we'll use to
    -- try out alterations to the tree and see if they type-check.
+  , declarationRenamedModule :: !RenamedSource
+     -- ^ The renamed module contains 'UnboundedVar', which marks a hole.
   }
 
 instance Show Declaration where
-  showsPrec p (Declaration b s real _parsedModule) =
+  showsPrec p (Declaration b s real _parsedModule _renamedSource) =
     showString "Declaration {declarationBind = " .
     gshows b .
     showString ", declarationSource = " .
@@ -61,14 +66,14 @@ newtype LineNumber = LineNumber Int
 -- can fill in with candidates.
 data Hole = Hole
   { holeRealSrcSpan :: !RealSrcSpan
-  , holeType :: !Type
+  , holeName :: !OccName
   }
 
 instance Show Hole where
-  showsPrec p (Hole realSrcSpan ty) =
+  showsPrec p (Hole realSrcSpan name) =
     showString "Hole {holeRealSrcSpan = " .
     showsPrec (p + 1) realSrcSpan .
-    showString ", holeType = " . gshows ty . showString "}"
+    showString ", holeName = " . gshows name . showString "}"
 
 -- | Completion for a declaration.
 data DeclarationCompletion = DeclarationCompletion
@@ -97,10 +102,12 @@ instance Show Substitution where
 -- declaration in the module, return that declaration.
 declarationByLine ::
      ModuleSource
-  -> ParsedModule
+  -> TypecheckedModule
   -> LineNumber
   -> Maybe Declaration
-declarationByLine (ModuleSource src) parsedModule (LineNumber line) = do
+declarationByLine (ModuleSource src) typecheckedModule (LineNumber line) = do
+  renamedModule <- tm_renamed_source typecheckedModule
+  let binds = renamedSourceToBag renamedModule
   located <- find ((`realSpans` (line, 1)) . getLoc) (bagToList binds)
   realSrcSpan <- getRealSrcSpan (getLoc located)
   let start = srcLocLine (realSrcSpanStart realSrcSpan)
@@ -111,30 +118,51 @@ declarationByLine (ModuleSource src) parsedModule (LineNumber line) = do
          intercalate "\n" (take (end - (start - 1)) (drop (start - 1) (lines src)))
      , declarationBind = unLoc located
      , declarationRealSrcSpan = realSrcSpan
-     , declarationParsedModule = parsedModule
+     , declarationRenamedModule = renamedModule
+     , declarationParsedModule = tm_parsed_module typecheckedModule
      })
-  where binds = parsedModuleToBag parsedModule
+
+-- | Get all the holes in the given declaration.
+declarationHoles :: Declaration -> [Hole]
+declarationHoles =
+  mapMaybe
+    (\h -> do
+       (name, src) <- getHoleName h
+       pure (Hole {holeRealSrcSpan = src, holeName = name})) .
+  listify (isJust . getHoleName) . declarationBind
+  where
+    getHoleName :: LHsExpr Name -> Maybe (OccName, RealSrcSpan)
+    getHoleName =
+      \case
+        L someSpan (HsUnboundVar (TrueExprHole name)) -> do
+          rs <- getRealSrcSpan someSpan
+          pure (name, rs)
+        _ -> Nothing
 
 -- | Get completions for a declaration.
 declarationCompletions :: GhcMonad m => Declaration -> m [DeclarationCompletion]
 declarationCompletions = undefined
 
--- | Get all the holes in the given declaration.
-declarationHoles :: Declaration -> [Hole]
-declarationHoles = undefined
-
 --------------------------------------------------------------------------------
 -- Helpers
 
 -- | Convert parsed source groups into one bag of binds.
-parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
-parsedModuleToBag =
+_parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
+_parsedModuleToBag =
   listToBag . mapMaybe valD . hsmodDecls . unLoc . pm_parsed_source
   where
     valD =
       \case
         L l (ValD hsBind) -> pure (L l hsBind)
         _ -> Nothing
+
+renamedSourceToBag :: RenamedSource -> Bag (LHsBindLR Name Name)
+renamedSourceToBag (hsGroup, _, _, _) = unHsValBindsLR (hs_valds hsGroup)
+  where
+    unHsValBindsLR =
+      \case
+        ValBindsIn binds _ -> binds
+        ValBindsOut pairs _ -> unionManyBags (map snd pairs)
 
 -- | Does X span over the point Y?
 realSpans :: SrcSpan -> (Int, Int) -> Bool
