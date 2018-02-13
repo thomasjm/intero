@@ -310,7 +310,8 @@ fillCmd =
                Just module' -> do
                  case GHC.ms_location module' of
                    ModLocation {ml_hs_file = Just moduleFilePath} -> do
-                     typecheckedModule <- GHC.parseModule module' >>= GHC.typecheckModule
+                     typecheckedModule <-
+                       GHC.parseModule module' >>= GHC.typecheckModule
                      moduleString <- liftIO (readFile moduleFilePath)
                      case Completion.declarationByLine
                             (Completion.ModuleSource moduleString)
@@ -328,6 +329,27 @@ fillCmd =
                            (print
                               ("Holes: " ++
                                show (Completion.declarationHoles declaration)))
+                         let filled =
+                               foldl
+                                 (\pm (hole, expr) ->
+                                    Completion.fillHole
+                                      pm
+                                      hole
+                                      expr)
+                                 (Completion.declarationParsedModule declaration)
+                                 (zip (Completion.declarationHoles declaration)
+                                      [GHC.HsLit
+                                         (GHC.HsChar NoSourceText c) | c <- ['a','b']])
+                         typecheckedModule' <- GHC.typecheckModule filled
+                         case Completion.declarationByLine
+                                (Completion.ModuleSource moduleString)
+                                typecheckedModule'
+                                (Completion.LineNumber line) of
+                           Nothing -> pure ()
+                           Just declaration' ->
+                             liftIO
+                               (print ("Got edited declaration: " ++ show declaration'))
+                         liftIO (putStrLn "Survived the type-check?")
                    _ ->
                      liftIO
                        (putStrLn ("Couldn't find filename for module: " ++ name))

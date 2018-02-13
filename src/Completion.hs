@@ -6,6 +6,8 @@ module Completion
   ( declarationByLine
   , declarationCompletions
   , declarationHoles
+  , fillHole
+  , Declaration(..)
   , DeclarationCompletion(..)
   , Substitution(..)
   , Hole (..)
@@ -144,6 +146,22 @@ declarationCompletions :: GhcMonad m => Declaration -> m [DeclarationCompletion]
 declarationCompletions = undefined
 
 --------------------------------------------------------------------------------
+-- Filling holes in the AST
+
+-- | Fill the given hole in the module with the given expression.
+fillHole :: ParsedModule -> Hole -> HsExpr RdrName -> ParsedModule
+fillHole pm hole expr =
+  pm {pm_parsed_source = everywhere (mkT replace) (pm_parsed_source pm)}
+  where
+    replace :: LHsExpr RdrName -> LHsExpr RdrName
+    replace  =
+      (\case
+         L someSpan (HsVar {})
+           | Just realSrcSpan <- getRealSrcSpan someSpan
+           , realSrcSpan == holeRealSrcSpan hole -> L someSpan expr
+         e -> e)
+
+--------------------------------------------------------------------------------
 -- Helpers
 
 -- | Convert parsed source groups into one bag of binds.
@@ -156,6 +174,7 @@ _parsedModuleToBag =
         L l (ValD hsBind) -> pure (L l hsBind)
         _ -> Nothing
 
+-- | Convert renamed source groups into one bag of binds.
 renamedSourceToBag :: RenamedSource -> Bag (LHsBindLR Name Name)
 renamedSourceToBag (hsGroup, _, _, _) = unHsValBindsLR (hs_valds hsGroup)
   where
