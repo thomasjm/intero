@@ -3,14 +3,15 @@
 -- | A GHC code completion module.
 
 module Completion
-  ( declarationByLine
+  ( getCompletableModule
+  , declarationByLine
   , declarationCompletions
   , declarationHoles
   , fillHole
   , Declaration(..)
   , DeclarationCompletion(..)
   , Substitution(..)
-  , Hole (..)
+  , Hole(..)
   , ModuleSource(..)
   , LineNumber(..)
   ) where
@@ -19,12 +20,20 @@ import Bag
 import Data.Generics
 import Data.List
 import Data.Maybe
+import DynFlags
 import GHC
+import HscTypes
 import Name
 import SrcLoc
 
 --------------------------------------------------------------------------------
 -- Types
+
+-- | A module which can be completed. Cannot contain type errors,
+-- including deferred ones.
+data CompletableModule = CompletableModule
+  { completableModule :: TypecheckedModule
+  }
 
 -- | All the context we need to generate completions for a declaration
 -- in a module.
@@ -100,14 +109,31 @@ instance Show Substitution where
 --------------------------------------------------------------------------------
 -- Top-level API
 
+-- | Get a module which can be completed. Cannot contain type errors,
+-- including deferred ones.
+getCompletableModule :: GhcMonad m => ModSummary -> m CompletableModule
+getCompletableModule ms =
+  fmap
+    CompletableModule
+    (do df <- GHC.getSessionDynFlags
+        parseModule ms >>= \parsed ->
+          typecheckModule
+            parsed
+            { GHC.pm_mod_summary =
+                (GHC.pm_mod_summary parsed)
+                { HscTypes.ms_hspp_opts =
+                    unSetGeneralFlag' Opt_DeferTypeErrors df
+                }
+            })
+
 -- | Find a declaration by line number. If the line is within a
 -- declaration in the module, return that declaration.
 declarationByLine ::
      ModuleSource
-  -> TypecheckedModule
+  -> CompletableModule
   -> LineNumber
   -> Maybe Declaration
-declarationByLine (ModuleSource src) typecheckedModule (LineNumber line) = do
+declarationByLine (ModuleSource src) (CompletableModule typecheckedModule) (LineNumber line) = do
   renamedModule <- tm_renamed_source typecheckedModule
   let binds = renamedSourceToBag renamedModule
   located <- find ((`realSpans` (line, 1)) . getLoc) (bagToList binds)
@@ -117,7 +143,9 @@ declarationByLine (ModuleSource src) typecheckedModule (LineNumber line) = do
   pure
     (Declaration
      { declarationSource =
-         intercalate "\n" (take (end - (start - 1)) (drop (start - 1) (lines src)))
+         intercalate
+           "\n"
+           (take (end - (start - 1)) (drop (start - 1) (lines src)))
      , declarationBind = unLoc located
      , declarationRealSrcSpan = realSrcSpan
      , declarationRenamedModule = renamedModule
@@ -143,7 +171,9 @@ declarationHoles =
 
 -- | Get completions for a declaration.
 declarationCompletions :: GhcMonad m => Declaration -> m [DeclarationCompletion]
-declarationCompletions = undefined
+declarationCompletions declaration = do
+  names <- GHC.getRdrNamesInScope
+  undefined
 
 --------------------------------------------------------------------------------
 -- Filling holes in the AST
@@ -156,7 +186,7 @@ fillHole pm hole expr =
     replace :: LHsExpr RdrName -> LHsExpr RdrName
     replace  =
       (\case
-         L someSpan (HsVar {})
+         L someSpan _ {-(HsVar {})-}
            | Just realSrcSpan <- getRealSrcSpan someSpan
            , realSrcSpan == holeRealSrcSpan hole -> L someSpan expr
          e -> e)

@@ -64,6 +64,7 @@ import GHC ( LoadHowMuch(..), Target(..),  TargetId(..), InteractiveImport(..),
 import           HsImpExp
 import HscTypes ( tyThingParent_maybe, handleFlagWarnings, getSafeMode, hsc_IC,
                   setInteractivePrintName )
+import qualified HscTypes
 import           Module
 import           Name
 
@@ -310,12 +311,11 @@ fillCmd =
                Just module' -> do
                  case GHC.ms_location module' of
                    ModLocation {ml_hs_file = Just moduleFilePath} -> do
-                     typecheckedModule <-
-                       GHC.parseModule module' >>= GHC.typecheckModule
+                     completable <- Completion.getCompletableModule module'
                      moduleString <- liftIO (readFile moduleFilePath)
                      case Completion.declarationByLine
                             (Completion.ModuleSource moduleString)
-                            typecheckedModule
+                            completable
                             (Completion.LineNumber line) of
                        Nothing ->
                          liftIO
@@ -332,15 +332,23 @@ fillCmd =
                          let filled =
                                foldl
                                  (\pm (hole, expr) ->
-                                    Completion.fillHole
-                                      pm
-                                      hole
-                                      expr)
+                                    Completion.fillHole pm hole expr)
                                  (Completion.declarationParsedModule declaration)
-                                 (zip (Completion.declarationHoles declaration)
-                                      [GHC.HsLit
-                                         (GHC.HsChar NoSourceText c) | c <- ['a','b']])
-                         typecheckedModule' <- GHC.typecheckModule filled
+                                 (zip
+                                    (Completion.declarationHoles declaration)
+                                    [ GHC.HsLit (GHC.HsChar NoSourceText c)
+                                    | c <- ['a', 'b']
+                                    ])
+                         df <- GHC.getSessionDynFlags
+                         typecheckedModule' <-
+                           GHC.typecheckModule
+                             filled
+                             { GHC.pm_mod_summary =
+                                 (GHC.pm_mod_summary filled)
+                                 { HscTypes.ms_hspp_opts =
+                                     unSetGeneralFlag' Opt_DeferTypeErrors df
+                                 }
+                             }
                          case Completion.declarationByLine
                                 (Completion.ModuleSource moduleString)
                                 typecheckedModule'
@@ -348,7 +356,9 @@ fillCmd =
                            Nothing -> pure ()
                            Just declaration' ->
                              liftIO
-                               (print ("Got edited declaration: " ++ show declaration'))
+                               (print
+                                  ("Got edited declaration: " ++
+                                   show declaration'))
                          liftIO (putStrLn "Survived the type-check?")
                    _ ->
                      liftIO
