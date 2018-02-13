@@ -323,43 +323,8 @@ fillCmd =
                               ("Unable to locate declaration containing line " ++
                                show line))
                        Just declaration -> do
-                         liftIO
-                           (print ("Got declaration: " ++ show declaration))
-                         liftIO
-                           (print
-                              ("Holes: " ++
-                               show (Completion.declarationHoles declaration)))
-                         let filled =
-                               foldl
-                                 (\pm (hole, expr) ->
-                                    Completion.fillHole pm hole expr)
-                                 (Completion.declarationParsedModule declaration)
-                                 (zip
-                                    (Completion.declarationHoles declaration)
-                                    [ GHC.HsLit (GHC.HsChar NoSourceText c)
-                                    | c <- ['a', 'b']
-                                    ])
-                         df <- GHC.getSessionDynFlags
-                         typecheckedModule' <-
-                           GHC.typecheckModule
-                             filled
-                             { GHC.pm_mod_summary =
-                                 (GHC.pm_mod_summary filled)
-                                 { HscTypes.ms_hspp_opts =
-                                     unSetGeneralFlag' Opt_DeferTypeErrors df
-                                 }
-                             }
-                         case Completion.declarationByLine
-                                (Completion.ModuleSource moduleString)
-                                typecheckedModule'
-                                (Completion.LineNumber line) of
-                           Nothing -> pure ()
-                           Just declaration' ->
-                             liftIO
-                               (print
-                                  ("Got edited declaration: " ++
-                                   show declaration'))
-                         liftIO (putStrLn "Survived the type-check?")
+                         Completion.declarationCompletions declaration
+                         pure ()
                    _ ->
                      liftIO
                        (putStrLn ("Couldn't find filename for module: " ++ name))

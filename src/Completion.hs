@@ -17,6 +17,8 @@ module Completion
   ) where
 
 import Bag
+import BasicTypes
+import Control.Monad
 import Data.Generics
 import Data.List
 import Data.Maybe
@@ -113,18 +115,7 @@ instance Show Substitution where
 -- including deferred ones.
 getCompletableModule :: GhcMonad m => ModSummary -> m CompletableModule
 getCompletableModule ms =
-  fmap
-    CompletableModule
-    (do df <- GHC.getSessionDynFlags
-        parseModule ms >>= \parsed ->
-          typecheckModule
-            parsed
-            { GHC.pm_mod_summary =
-                (GHC.pm_mod_summary parsed)
-                { HscTypes.ms_hspp_opts =
-                    unSetGeneralFlag' Opt_DeferTypeErrors df
-                }
-            })
+  fmap CompletableModule (parseModule ms >>= typecheckModuleNoDeferring)
 
 -- | Find a declaration by line number. If the line is within a
 -- declaration in the module, return that declaration.
@@ -172,8 +163,36 @@ declarationHoles =
 -- | Get completions for a declaration.
 declarationCompletions :: GhcMonad m => Declaration -> m [DeclarationCompletion]
 declarationCompletions declaration = do
-  names <- GHC.getRdrNamesInScope
-  undefined
+  _names <- GHC.getRdrNamesInScope
+  foldM
+    (\parsed (hole, expr) -> do
+       mparsed <- tryWellTypedFill parsed hole expr
+       case mparsed of
+         Nothing -> error ("Couldn't fill hole with correct type: " ++ show hole)
+         Just parsed' -> pure parsed')
+    (declarationParsedModule declaration)
+    (zip
+       (declarationHoles declaration)
+       [GHC.HsLit (GHC.HsChar NoSourceText c) | c <- ['a', 'b']])
+  pure []
+
+--------------------------------------------------------------------------------
+-- Testing out completions
+
+-- | Try to fill a hole with the given expression; if it type-checks,
+-- we return the newly updated parse tree. Otherwise, we return Nothing.
+tryWellTypedFill ::
+     GhcMonad m
+  => ParsedModule
+  -> Hole
+  -> HsExpr RdrName
+  -> m (Maybe ParsedModule)
+tryWellTypedFill pm hole expr =
+  handleSourceError
+    (const (pure Nothing))
+    (fmap
+       (Just . tm_parsed_module)
+       (typecheckModuleNoDeferring (fillHole pm hole expr)))
 
 --------------------------------------------------------------------------------
 -- Filling holes in the AST
@@ -184,15 +203,34 @@ fillHole pm hole expr =
   pm {pm_parsed_source = everywhere (mkT replace) (pm_parsed_source pm)}
   where
     replace :: LHsExpr RdrName -> LHsExpr RdrName
-    replace  =
+    replace =
       (\case
-         L someSpan _ {-(HsVar {})-}
+         L someSpan _
            | Just realSrcSpan <- getRealSrcSpan someSpan
            , realSrcSpan == holeRealSrcSpan hole -> L someSpan expr
          e -> e)
 
 --------------------------------------------------------------------------------
 -- Helpers
+
+-- | Type-check the module without deferring type errors, and without
+-- logging messages.
+typecheckModuleNoDeferring :: GhcMonad m => ParsedModule -> m TypecheckedModule
+typecheckModuleNoDeferring parsed = do
+  df <- getSessionDynFlags
+  typecheckModule
+    parsed
+    { GHC.pm_mod_summary =
+        (GHC.pm_mod_summary parsed)
+        { HscTypes.ms_hspp_opts =
+            unSetGeneralFlag'
+              Opt_DeferTypeErrors
+              df {log_action = nullLogAction}
+        }
+    }
+  where
+    nullLogAction _df _reason _sev _span _style _msgdoc =
+      pure ()
 
 -- | Convert parsed source groups into one bag of binds.
 _parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
