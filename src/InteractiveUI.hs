@@ -64,7 +64,6 @@ import GHC ( LoadHowMuch(..), Target(..),  TargetId(..), InteractiveImport(..),
 import           HsImpExp
 import HscTypes ( tyThingParent_maybe, handleFlagWarnings, getSafeMode, hsc_IC,
                   setInteractivePrintName )
-import qualified HscTypes
 import           Module
 import           Name
 
@@ -323,8 +322,19 @@ fillCmd =
                               ("Unable to locate declaration containing line " ++
                                show line))
                        Just declaration -> do
-                         Completion.declarationCompletions declaration
-                         pure ()
+                         cs <- Completion.declarationCompletions declaration
+                         df <- GHC.getSessionDynFlags
+                         mapM_
+                           (liftIO .
+                            putStrLn .
+                            (\c ->
+                               "Completion: " ++
+                               intercalate
+                                 ", "
+                                 (map
+                                    (\s -> showPpr df (Completion.substitutionReplacement s))
+                                    (Completion.declarationCompletionSubstitutions c))))
+                           (cs)
                    _ ->
                      liftIO
                        (putStrLn ("Couldn't find filename for module: " ++ name))
