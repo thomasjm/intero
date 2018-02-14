@@ -334,7 +334,7 @@ fillCmd =
                                  (map
                                     (\s -> showPpr df (Completion.substitutionReplacement s))
                                     (Completion.declarationCompletionSubstitutions c))))
-                           (cs)
+                           cs
                    _ ->
                      liftIO
                        (putStrLn ("Couldn't find filename for module: " ++ name))
