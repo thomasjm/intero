@@ -443,7 +443,7 @@ typecheckModuleNoDeferring parsed = do
 -- | Convert parsed source groups into one bag of binds.
 _parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
 _parsedModuleToBag =
-  listToBag . mapMaybe valD . hsmodDecls . unLoc . pm_parsed_source
+  listToBag . mapMaybe valD . _ . unLoc . pm_parsed_source
   where
     valD =
       \case
