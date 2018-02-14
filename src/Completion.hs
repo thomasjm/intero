@@ -299,8 +299,25 @@ getWellTypedFills pm hole names = do
                  -- trace
                  --   ("No cache for: " ++ showPpr df typ)
                 ->
-                 (do if not (unifiable typ (holeType hole))
-                       then -- trace
+                 (do if unifiable typ (holeType hole)
+                       then do
+                         liftIO
+                           (putStrLn
+                              ("tryWellTypedFill: " ++
+                               showPpr df rdrname ++
+                               " :: " ++
+                               showPpr df typ ++
+                               " unifiable with " ++ showPpr df (holeType hole)))
+                         tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)
+                       else pure Nothing))
+          pure
+            ( M.insert (StringEquality df typ) mparsedModule cache
+            , case mparsedModule of
+                Nothing -> candidates
+                Just parsedModule -> (rdrname, parsedModule) : candidates))
+       (mempty, [])
+       names)
+                            -- trace
                             --   ("Skipping " ++
                             --    showPpr df rdrname ++
                             --    " :: " ++
@@ -310,15 +327,6 @@ getWellTypedFills pm hole names = do
                             --    ", unifiable:\n" ++
                             --    show (T df typ) ++
                             --    "\n" ++ show (T df (holeType hole)))
-                              (pure Nothing)
-                       else tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)))
-          pure
-            ( M.insert (StringEquality df typ) mparsedModule cache
-            , case mparsedModule of
-                Nothing -> candidates
-                Just parsedModule -> (rdrname, parsedModule) : candidates))
-       (mempty, [])
-       names)
 
 data T = T DynFlags Type
 instance Show T where
@@ -374,7 +382,12 @@ unifiable t1 t2 =
     (LitTy {}, AppTy {}) -> False
     (LitTy {}, FunTy {}) -> False
     (FunTy {}, LitTy {}) -> False
-    _ -> True -- Default to false positives.
+    (AppTy{}, TyConApp {}) -> True
+    (TyConApp {},AppTy{}) -> True
+    (TyConApp {},FunTy {}) -> False
+    (FunTy {},TyConApp {}) -> False
+    (LitTy {},TyConApp {}) -> False
+    (TyConApp {},LitTy {}) -> False
 
 -- | Try to fill a hole with the given expression; if it type-checks,
 -- we return the newly updated parse tree. Otherwise, we return Nothing.
@@ -385,11 +398,11 @@ tryWellTypedFill ::
   -> HsExpr RdrName
   -> m (Maybe ParsedModule)
 tryWellTypedFill pm hole expr =
-  handleSourceError
-    (const (pure Nothing))
-    (fmap
-       (Just . tm_parsed_module)
-       (typecheckModuleNoDeferring (fillHole pm hole expr)))
+  do handleSourceError
+       (const (pure Nothing))
+       (fmap
+          (Just . tm_parsed_module)
+          (typecheckModuleNoDeferring (fillHole pm hole expr)))
 
 --------------------------------------------------------------------------------
 -- Filling holes in the AST
@@ -443,7 +456,7 @@ typecheckModuleNoDeferring parsed = do
 -- | Convert parsed source groups into one bag of binds.
 _parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
 _parsedModuleToBag =
-  listToBag . mapMaybe valD . _ . unLoc . pm_parsed_source
+  listToBag . mapMaybe valD . hsmodDecls . unLoc . pm_parsed_source
   where
     valD =
       \case
