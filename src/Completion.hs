@@ -65,10 +65,12 @@ data Declaration = Declaration
   , declarationRenamedModule :: !RenamedSource
      -- ^ The renamed module contains 'UnboundedVar', which marks a hole.
   , declarationModuleInfo :: !ModuleInfo
+  , declarationTypecheckedModule :: !TypecheckedSource
+    -- ^ Used to get type of holes.
   }
 
 instance Show Declaration where
-  showsPrec p (Declaration b s real _parsedModule _renamedSource _) =
+  showsPrec p (Declaration b s real _parsedModule _renamedSource _ _) =
     showString "Declaration {declarationBind = " .
     gshows b .
     showString ", declarationSource = " .
@@ -93,13 +95,16 @@ newtype LineNumber = LineNumber Int
 data Hole = Hole
   { holeRealSrcSpan :: !RealSrcSpan
   , holeName :: !OccName
+  , holeType :: !Type
+  , holeDf :: !DynFlags
   }
 
 instance Show Hole where
-  showsPrec p (Hole realSrcSpan name) =
+  showsPrec p (Hole realSrcSpan name ty df) =
     showString "Hole {holeRealSrcSpan = " .
     showsPrec (p + 1) realSrcSpan .
-    showString ", holeName = " . gshows name . showString "}"
+    showString ", holeName = " . gshows name . showString ", holeType = " .
+    showString (showPpr df ty) . showString "}"
 
 -- | Completion for a declaration.
 data DeclarationCompletion = DeclarationCompletion
@@ -151,18 +156,35 @@ declarationByLine (ModuleSource src) (CompletableModule typecheckedModule) (Line
      , declarationRealSrcSpan = realSrcSpan
      , declarationRenamedModule = renamedModule
      , declarationParsedModule = tm_parsed_module typecheckedModule
+     , declarationTypecheckedModule = tm_typechecked_source typecheckedModule
      , declarationModuleInfo = tm_checked_module_info typecheckedModule
      })
 
 -- | Get all the holes in the given declaration.
-declarationHoles :: Declaration -> [Hole]
-declarationHoles =
-  mapMaybe
-    (\h -> do
-       (name, src) <- getHoleName h
-       pure (Hole {holeRealSrcSpan = src, holeName = name})) .
-  listify (isJust . getHoleName) . declarationBind
+declarationHoles :: DynFlags -> Declaration -> [Hole]
+declarationHoles df declaration = go declaration
   where
+    go =
+      mapMaybe
+        (\h -> do
+           (name, src) <- getHoleName h
+           case listToMaybe
+                  (listify
+                     (isJust . typeAt src)
+                     (declarationTypecheckedModule declaration)) >>=
+                typeAt src of
+             Nothing -> Nothing
+             Just typ ->
+               pure
+                 (Hole {holeRealSrcSpan = src, holeName = name, holeType = typ, holeDf = df})) .
+      listify (isJust . getHoleName) . declarationBind
+    typeAt :: RealSrcSpan -> LHsExpr Id -> Maybe Type
+    typeAt rs expr =
+      if getLoc expr == RealSrcSpan rs
+        then case expr of
+               L _ (HsVar (L _ i)) -> pure (idType i)
+               _ -> Nothing
+        else Nothing
     getHoleName :: LHsExpr Name -> Maybe (OccName, RealSrcSpan)
     getHoleName =
       \case
@@ -187,6 +209,7 @@ declarationCompletions declaration = do
                    []
                    (modInfoTopLevelScope (declarationModuleInfo declaration)))))
   hscEnv <- getSession
+  df <- getSessionDynFlags
   typedNames <-
     liftIO
       (mapM
@@ -200,7 +223,7 @@ declarationCompletions declaration = do
   collectCompletions
     (catMaybes typedNames)
     (declarationParsedModule declaration)
-    (declarationHoles declaration)
+    (declarationHoles df declaration)
 
 -- | Collect sets of compatible completions of holes for the
 -- declaration.
@@ -240,7 +263,7 @@ collectCompletions rdrNames parsedModule0 holes0 =
 
 data StringEquality = StringEquality
   { _stringEqualityDf :: DynFlags
-  , stringEqualityType :: Type
+  , _stringEqualityType :: Type
   }
 instance Show StringEquality where
   show (StringEquality df x) = showPpr df x
@@ -269,30 +292,26 @@ getWellTypedFills pm hole names = do
        (\(!cache, candidates) (rdrname, typ) -> do
           mparsedModule <-
             (case M.lookup (StringEquality df typ) cache of
-               Just mparsedModule ->
+               Just mparsedModule
                  -- trace ("Type cached: " ++ showPpr df typ)
-                 (pure mparsedModule)
-               Nothing ->
+                -> (pure mparsedModule)
+               Nothing
                  -- trace
                  --   ("No cache for: " ++ showPpr df typ)
-                   (do case find
-                              (not . unifiable typ)
-                              (map
-                                 (stringEqualityType . fst)
-                                 (filter (isJust . snd) (M.toList cache))) of
-                         Nothing ->
-                           tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)
-                         Just typeContradiction ->
-                           -- trace
-                           --   ("Skipping " ++
-                           --    showPpr df rdrname ++
-                           --    " :: " ++
-                           --    showPpr df typ ++
-                           --    " which contradicts " ++
-                           --    showPpr df typeContradiction ++
-                           --    ", unifiable:\n" ++
-                           --    show (T df typ) ++ "\n" ++ show (T df typeContradiction))
-                             (pure Nothing)))
+                ->
+                 (do if not (unifiable typ (holeType hole))
+                       then -- trace
+                            --   ("Skipping " ++
+                            --    showPpr df rdrname ++
+                            --    " :: " ++
+                            --    showPpr df typ ++
+                            --    " which contradicts hole type " ++
+                            --    showPpr df (holeType hole) ++
+                            --    ", unifiable:\n" ++
+                            --    show (T df typ) ++
+                            --    "\n" ++ show (T df (holeType hole)))
+                              (pure Nothing)
+                       else tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)))
           pure
             ( M.insert (StringEquality df typ) mparsedModule cache
             , case mparsedModule of
