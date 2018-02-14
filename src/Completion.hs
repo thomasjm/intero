@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -28,7 +29,6 @@ import           Data.Generics
 import           Data.List
 import qualified Data.Map.Strict as M
 import           Data.Maybe
-import           Debug.Trace
 import           DynFlags
 import           FastString
 import           GHC
@@ -38,6 +38,8 @@ import           Outputable
 import           RdrName
 import           SrcLoc
 import           TcRnDriver
+import           TyCoRep
+import           TyCon
 
 --------------------------------------------------------------------------------
 -- Types
@@ -185,17 +187,14 @@ declarationCompletions declaration = do
                    []
                    (modInfoTopLevelScope (declarationModuleInfo declaration)))))
   hscEnv <- getSession
-  df <- getSessionDynFlags
   typedNames <-
     liftIO
       (mapM
          (\rdrName -> do
             (_, ty) <- tcRnExpr hscEnv TM_Inst (rdrNameToLHsExpr rdrName)
-            when
-              False
-              (trace
-                 (occNameString (rdrNameOcc rdrName) ++ " :: " ++ showPpr df ty)
-                 (pure ()))
+            {-(trace
+               (occNameString (rdrNameOcc rdrName) ++ " :: " ++ showPpr df ty)
+               (pure ()))-}
             pure (fmap (rdrName, ) ty))
          names)
   collectCompletions
@@ -218,13 +217,13 @@ collectCompletions rdrNames parsedModule0 holes0 =
     go _ [] = pure []
     go parsedModule (hole:holes) = do
       rdrNamesAndParsedModules <- getWellTypedFills parsedModule hole rdrNames
-      trace
+      {-trace
         (show
            ( "hole"
            , hole
            , "rdrnames"
            , map (occNameString . rdrNameOcc . fst) rdrNamesAndParsedModules))
-        (pure ())
+        (pure ())-}
       fmap
         concat
         (mapM
@@ -239,8 +238,10 @@ collectCompletions rdrNames parsedModule0 holes0 =
 --------------------------------------------------------------------------------
 -- Testing out completions
 
-data StringEquality =
-  StringEquality DynFlags Type
+data StringEquality = StringEquality
+  { _stringEqualityDf :: DynFlags
+  , stringEqualityType :: Type
+  }
 instance Show StringEquality where
   show (StringEquality df x) = showPpr df x
 instance Eq StringEquality where
@@ -274,7 +275,24 @@ getWellTypedFills pm hole names = do
                Nothing ->
                  -- trace
                  --   ("No cache for: " ++ showPpr df typ)
-                   (tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)))
+                   (do case find
+                              (not . unifiable typ)
+                              (map
+                                 (stringEqualityType . fst)
+                                 (filter (isJust . snd) (M.toList cache))) of
+                         Nothing ->
+                           tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)
+                         Just typeContradiction ->
+                           -- trace
+                           --   ("Skipping " ++
+                           --    showPpr df rdrname ++
+                           --    " :: " ++
+                           --    showPpr df typ ++
+                           --    " which contradicts " ++
+                           --    showPpr df typeContradiction ++
+                           --    ", unifiable:\n" ++
+                           --    show (T df typ) ++ "\n" ++ show (T df typeContradiction))
+                             (pure Nothing)))
           pure
             ( M.insert (StringEquality df typ) mparsedModule cache
             , case mparsedModule of
@@ -282,6 +300,62 @@ getWellTypedFills pm hole names = do
                 Just parsedModule -> (rdrname, parsedModule) : candidates))
        (mempty, [])
        names)
+
+data T = T DynFlags Type
+instance Show T where
+  showsPrec p (T df ty0) =
+    case ty0 of
+      TyVarTy v ->
+        showString "(TyVarTy " . showString (showPpr df v) . showString ")"
+      AppTy t1 t2 ->
+        showString "(AppTy " .
+        showsPrec (p + 1) (T df t1) .
+        showString " " . showsPrec (p + 1) (T df t2) . showString ")"
+      TyConApp tyCon tys ->
+        showString "(TyConApp " .
+        showString (showPpr df tyCon) .
+        showString " " . showsPrec (p + 1) (map (T df) tys) . showString ")"
+      ForAllTy _tyvar ty ->
+        showString "(ForAllTy _ " . showsPrec (p + 1) (T df ty) . showString ")"
+      FunTy x y ->
+        showString "(FunTy " .
+        showsPrec p (T df x) .
+        showString " " . showsPrec p (T df y) . showString ")"
+      LitTy litTy ->
+        showString "(LitTy " . showString (showPpr df litTy) . showString ")"
+      CastTy ty _k ->
+        showString "(CastTy " . showsPrec (p + 1) (T df ty) . showString " _)"
+      CoercionTy _ -> showString "(Coercion _)"
+
+-- | Are the two types at least unifiable? Should not produce false
+-- negatives, but should produce false positives.
+unifiable :: Type -> Type -> Bool
+unifiable t1 t2 =
+  case (t1, t2) of
+    (CoercionTy {}, _) -> True -- Not sure, default to false positives.
+    (_, CoercionTy {}) -> True -- Not sure, default to false positives.
+    -- Skip type-classes.
+    (FunTy (TyConApp (tyConFlavour -> "class") _) x, y) -> unifiable x y
+    (x, FunTy (TyConApp ((tyConFlavour -> "class")) _) y) -> unifiable x y
+    --
+    (ForAllTy _ x, y) -> unifiable x y
+    (x, ForAllTy _ y) -> unifiable x y
+    (CastTy x _, y) -> unifiable x y
+    (x, CastTy y _) -> unifiable x y
+    (TyVarTy _, _) -> True
+    (_, TyVarTy _) -> True
+    (FunTy x y, FunTy x' y') -> unifiable x x' && unifiable y y'
+    (AppTy x y, AppTy x' y') -> unifiable x x' && unifiable y y'
+    (TyConApp con1 xs, TyConApp con2 ys) ->
+      con1 == con2 && all (uncurry unifiable) (zip xs ys)
+    (LitTy l1, LitTy l2) -> l1 == l2
+    (AppTy {}, FunTy {}) -> False
+    (FunTy {}, AppTy {}) -> False
+    (AppTy {}, LitTy {}) -> False
+    (LitTy {}, AppTy {}) -> False
+    (LitTy {}, FunTy {}) -> False
+    (FunTy {}, LitTy {}) -> False
+    _ -> True -- Default to false positives.
 
 -- | Try to fill a hole with the given expression; if it type-checks,
 -- we return the newly updated parse tree. Otherwise, we return Nothing.
