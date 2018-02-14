@@ -301,13 +301,13 @@ getWellTypedFills pm hole names = do
                 ->
                  (do if unifiable typ (holeType hole)
                        then do
-                         liftIO
+                         {-liftIO
                            (putStrLn
                               ("tryWellTypedFill: " ++
                                showPpr df rdrname ++
                                " :: " ++
                                showPpr df typ ++
-                               " unifiable with " ++ showPpr df (holeType hole)))
+                               " unifiable with " ++ showPpr df (holeType hole)))-}
                          tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)
                        else pure Nothing))
           pure
@@ -376,18 +376,31 @@ unifiable t1 t2 =
     (TyConApp con1 xs, TyConApp con2 ys) ->
       con1 == con2 && all (uncurry unifiable) (zip xs ys)
     (LitTy l1, LitTy l2) -> l1 == l2
+    -- Type application
+    (app@AppTy {}, TyConApp _ ys) ->
+      let (f, xs) = fargs app
+      in case f of
+           TyVarTy {} -> all (uncurry unifiable) (zip xs ys)
+           _ -> False
+    (TyConApp {}, AppTy {}) -> unifiable t2 t1 -- Flip args for re-use.
+    -- Incompatible types:
     (AppTy {}, FunTy {}) -> False
     (FunTy {}, AppTy {}) -> False
     (AppTy {}, LitTy {}) -> False
     (LitTy {}, AppTy {}) -> False
     (LitTy {}, FunTy {}) -> False
     (FunTy {}, LitTy {}) -> False
-    (AppTy{}, TyConApp {}) -> True
-    (TyConApp {},AppTy{}) -> True
-    (TyConApp {},FunTy {}) -> False
-    (FunTy {},TyConApp {}) -> False
-    (LitTy {},TyConApp {}) -> False
-    (TyConApp {},LitTy {}) -> False
+    (TyConApp {}, FunTy {}) -> False
+    (FunTy {}, TyConApp {}) -> False
+    (LitTy {}, TyConApp {}) -> False
+    (TyConApp {}, LitTy {}) -> False
+
+-- | Flatten an application f x y into (f,[x,y]).
+fargs :: Type -> (Type, [(Type)])
+fargs e = go e []
+  where
+    go (AppTy f x) args = go f (x : args)
+    go f args = (f, args)
 
 -- | Try to fill a hole with the given expression; if it type-checks,
 -- we return the newly updated parse tree. Otherwise, we return Nothing.
