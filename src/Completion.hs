@@ -296,15 +296,34 @@ makeReplacementString gre name =
   case lookupGRE_Name gre name of
     Nothing -> unqualified
     Just grelt ->
-      if gre_lcl grelt || any unQualSpecOK (gre_imp grelt)
+      if greltUnqualified grelt && unambiguous grelt
         then unqualified
-        else case gre_imp grelt of
-               (ImpSpec (ImpDeclSpec {is_qual = True, is_as = m}) _:_) ->
-                 qualified m
-               _ -> unqualified
+        else maybe unqualified qualified (greltQualification grelt)
   where
     unqualified = occNameString (nameOccName name)
     qualified m = moduleNameString m ++ "." ++ unqualified
+    unambiguous grelt = null conflicts
+      where
+        conflicts =
+          filter
+            greltUnqualified
+            (filter
+               (/= grelt)
+               (lookupGlobalRdrEnv gre (nameOccName (gre_name grelt))))
+
+-- | First the first available qualification for a name.
+greltQualification :: GlobalRdrElt -> Maybe ModuleName
+greltQualification grelt =
+  case gre_imp grelt of
+    (ImpSpec (ImpDeclSpec {is_as = m}) _:_) -> Just m
+    _ -> Nothing
+
+-- | The element is not qualified.
+greltUnqualified :: GlobalRdrElt -> Bool
+greltUnqualified grelt = local || importedUnqualified
+  where
+    local = gre_lcl grelt
+    importedUnqualified = any unQualSpecOK (gre_imp grelt)
 
 --------------------------------------------------------------------------------
 -- Testing out completions
