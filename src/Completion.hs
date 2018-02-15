@@ -221,33 +221,16 @@ declarationCompletions declaration =
           timed
             "declarationCompletions/combine names"
             (do rdrNames <-
-                  fmap
-                    (mapMaybe
-                       (\rdrname ->
-                          if isValOcc (rdrNameOcc rdrname)
-                            then case rdrname of
-                                   Qual {} -> Just rdrname
-                                   Exact name ->
-                                     Just
-                                       (Qual
-                                          (moduleName (nameModule name))
-                                          (nameOccName name))
-                                   _ -> Nothing
-                            else Nothing))
-                    getRdrNamesInScope
+                  fmap (filter (isValOcc . rdrNameOcc)) getRdrNamesInScope
                 let scopeNames =
-                      mapMaybe
-                        (\rdrname ->
-                           if isValName rdrname
-                             then Just
-                                    (Qual
-                                       (moduleName (nameModule rdrname))
-                                       (nameOccName rdrname))
-                             else Nothing)
-                        (fromMaybe
-                           []
-                           (modInfoTopLevelScope
-                              (declarationModuleInfo declaration)))
+                      map
+                        nameRdrName
+                        (filter
+                           isValName
+                           (fromMaybe
+                              []
+                              (modInfoTopLevelScope
+                                 (declarationModuleInfo declaration))))
                     !names =
                       foldl'
                         (flip S.insert)
@@ -348,7 +331,8 @@ getWellTypedFills pm hole names = do
           (do mparsedModule <-
                 case M.lookup (StringEquality df typ) cache of
                   Just mparsedModule -> pure mparsedModule
-                  Nothing -> tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)
+                  Nothing ->
+                    tryWellTypedFill pm hole (rdrNameToHsExpr rdrname) typ
               let !cache' = M.insert (StringEquality df typ) mparsedModule cache
                   !candidates' =
                     case mparsedModule of
@@ -356,9 +340,48 @@ getWellTypedFills pm hole names = do
                       Just parsedModule -> (rdrname, parsedModule) : candidates
               pure (cache', candidates')))
        (mempty, [])
-       (filter
-          (\(_, typ) -> isJust (tcUnifyTyKi (normalize typ) hty))
-          names))
+       (filter (unifies hty . normalize . snd) names))
+
+-- | The purpose of this function is to eliminate types that should
+-- not be tested with a full module type-check. This checker is
+-- stricter than GHC's own unifier, much stricter than Hoogle; it
+-- produces false negatives. But it should not produce false positives
+-- ideally.
+unifies :: Type -> Type -> Bool
+unifies t1 t2 = theirs t1 t2 && ours t1 t2
+  where
+    theirs x y = isJust (tcUnifyTyKi x y)
+    -- Let them deal with lits:
+    ours x@LitTy {} y@LitTy {} = theirs x y
+    -- We assume a type variable unifies with anything, leave it to
+    -- them:
+    ours x@TyVarTy {} y = theirs x y
+    ours x y@TyVarTy {} = theirs x y
+    -- We ignore forall's:
+    ours (ForAllTy _ x) y = ours x y
+    ours x (ForAllTy _ y) = ours x y
+    -- We ignore casts:
+    ours (CastTy x _) y = ours x y
+    ours x (CastTy y _) = ours x y
+    -- We assume they know what to do with a coercion:
+    ours x y@CoercionTy {} = theirs x y
+    ours x@CoercionTy {} y = theirs x y
+    -- We only let functions unify with functions, and apps unify with apps:
+    ours (FunTy x y) (FunTy x' y') = ours x x' && ours y y'
+    ours (AppTy f x) (AppTy f' x') = ours f f' && ours x x'
+    -- We let them deal with this:
+    ours x@TyConApp {} y@TyConApp {} = theirs x y
+    -- These three should unify, so we let them deal with it:
+    ours x@AppTy {} y@TyConApp {} = theirs x y
+    ours y@TyConApp {} x@AppTy {} = theirs x y
+    -- The rest SHOULD NOT be allowed to unify, because it's too
+    -- general to produce DWIM results:
+    ours FunTy {} _ = False
+    ours _ FunTy {} = False
+    ours AppTy {} _ = False
+    ours _ AppTy {} = False
+    ours TyConApp {} _ = False
+    ours _ TyConApp {} = False
 
 data T = T DynFlags Type
 instance Show T where
@@ -406,15 +429,17 @@ tryWellTypedFill ::
   => ParsedModule
   -> Hole
   -> HsExpr RdrName
+  -> Type
   -> m (Maybe ParsedModule)
-tryWellTypedFill pm hole expr =
-  timed
-    "tryWellTypedFill"
-    (handleSourceError
-       (const (pure Nothing))
-       (fmap
-          (Just . tm_parsed_module)
-          (typecheckModuleNoDeferring (fillHole pm hole expr))))
+tryWellTypedFill pm hole expr typ =
+  do df <- getSessionDynFlags
+     timed
+       ("tryWellTypedFill: " ++ showPpr df expr ++ " :: " ++ showPpr df typ)
+       (handleSourceError
+          (const (pure Nothing))
+          (fmap
+             (Just . tm_parsed_module)
+             (typecheckModuleNoDeferring (fillHole pm hole expr))))
 
 --------------------------------------------------------------------------------
 -- Filling holes in the AST
@@ -468,7 +493,7 @@ typecheckModuleNoDeferring parsed = do
 -- | Convert parsed source groups into one bag of binds.
 _parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
 _parsedModuleToBag =
-  listToBag . mapMaybe valD . _ . unLoc . pm_parsed_source
+  listToBag . mapMaybe valD . hsmodDecls . unLoc . pm_parsed_source
   where
     valD =
       \case

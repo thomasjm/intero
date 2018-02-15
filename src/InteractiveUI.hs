@@ -349,7 +349,7 @@ showRdrName df n =
     Unqual occName -> "Unqual " ++ showPpr df occName
     Qual m occName -> "Qual " ++ showPpr df m ++ " " ++ showPpr df occName
     Orig m occName -> "Orig " ++ showPpr df m ++ " " ++ showPpr df occName
-    Exact name -> "Exact " ++ showPpr df name
+    Exact name -> "Exact " ++ showPpr df name ++ " (" ++ showPpr df (nameModule name) ++")"
 
 withFillInput :: (String -> Int -> InputT GHCi ()) -> String -> InputT GHCi ()
 withFillInput cont input =
