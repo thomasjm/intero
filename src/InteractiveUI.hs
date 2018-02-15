@@ -333,8 +333,14 @@ fillCmd =
                                intercalate
                                  ", "
                                  (map
-                                    (\s -> showRdrName df (Completion.substitutionReplacement s))
-                                    (Completion.declarationCompletionSubstitutions c))))
+                                    (\s ->
+                                       showRdrName
+                                         df
+                                         (nameRdrName
+                                            (Completion.substitutionReplacement
+                                               s)))
+                                    (Completion.declarationCompletionSubstitutions
+                                       c))))
                            cs
                    _ ->
                      liftIO

@@ -39,6 +39,7 @@ import           Outputable
 import           RdrName
 import           SrcLoc
 import           TcRnDriver
+import           TcRnTypes (tcg_rdr_env)
 import           Text.Printf
 import           TyCoRep
 import           TyCon
@@ -83,10 +84,11 @@ data Declaration = Declaration
   , declarationModuleInfo :: !ModuleInfo
   , declarationTypecheckedModule :: !TypecheckedSource
     -- ^ Used to get type of holes.
+  , declarationGlobalRdrEnv :: !GlobalRdrEnv
   }
 
 instance Show Declaration where
-  showsPrec p (Declaration b s real _parsedModule _renamedSource _ _) =
+  showsPrec p (Declaration b s real _parsedModule _renamedSource _ _ _) =
     showString "Declaration {declarationBind = " .
     gshows b .
     showString ", declarationSource = " .
@@ -130,7 +132,7 @@ data DeclarationCompletion = DeclarationCompletion
 -- | Substition of a source span in the source code with a new string.
 data Substitution = Substitution
   { substitutionHole :: !Hole
-  , substitutionReplacement :: !RdrName
+  , substitutionReplacement :: !Name
   }
 
 instance Show Substitution where
@@ -176,6 +178,7 @@ declarationByLine (ModuleSource src) (CompletableModule typecheckedModule) (Line
      , declarationParsedModule = tm_parsed_module typecheckedModule
      , declarationTypecheckedModule = tm_typechecked_source typecheckedModule
      , declarationModuleInfo = tm_checked_module_info typecheckedModule
+     , declarationGlobalRdrEnv = tcg_rdr_env (fst (tm_internals_ typecheckedModule))
      })
 
 -- | Get all the holes in the given declaration.
@@ -220,14 +223,12 @@ declarationCompletions declaration =
           timed
             "declarationCompletions/combine names"
             (do let names =
-                      map
-                        nameRdrName
-                        (filter
-                           isValName
-                           (fromMaybe
-                              []
-                              (modInfoTopLevelScope
-                                 (declarationModuleInfo declaration))))
+                      filter
+                        isValName
+                        (fromMaybe
+                           []
+                           (modInfoTopLevelScope
+                              (declarationModuleInfo declaration)))
                 liftIO (putStrLn ("Names: " ++ show (length names)))
                 pure names)
         hscEnv <- getSession
@@ -239,7 +240,10 @@ declarationCompletions declaration =
                (foldM
                   (\(!names') rdrName -> do
                      (_, ty) <-
-                       tcRnExpr hscEnv TM_Inst (rdrNameToLHsExpr rdrName)
+                       tcRnExpr
+                         hscEnv
+                         TM_Inst
+                         (rdrNameToLHsExpr (nameRdrName rdrName))
                      pure (maybe names' (: names') (fmap (rdrName, ) ty)))
                   []
                   names))
@@ -250,19 +254,11 @@ declarationCompletions declaration =
              (declarationParsedModule declaration)
              (declarationHoles df declaration)))
 
--- showRdrName :: DynFlags -> GHC.RdrName -> String
--- showRdrName df n =
---   case n of
---     Unqual o -> "Unqual " ++ showPpr df o
---     Qual m o -> "Qual " ++ showPpr df m ++ " " ++ showPpr df o
---     Orig m o -> "Orig " ++ showPpr df m ++ " " ++ showPpr df o
---     Exact name -> "Exact " ++ showPpr df name
-
 -- | Collect sets of compatible completions of holes for the
 -- declaration.
 collectCompletions ::
      GhcMonad f
-  => [(RdrName, Type)]
+  => [(Name, Type)]
   -> ParsedModule
   -> [Hole]
   -> f [DeclarationCompletion]
@@ -311,8 +307,8 @@ getWellTypedFills ::
      GhcMonad m
   => ParsedModule
   -> Hole
-  -> [(RdrName, Type)]
-  -> m [(RdrName, ParsedModule)]
+  -> [(Name, Type)]
+  -> m [(Name, ParsedModule)]
 getWellTypedFills pm hole names = do
   df <- getSessionDynFlags
   let hty = normalize (holeType hole)
@@ -324,7 +320,7 @@ getWellTypedFills pm hole names = do
                 case M.lookup (StringEquality df typ) cache of
                   Just mparsedModule -> pure mparsedModule
                   Nothing ->
-                    tryWellTypedFill pm hole (rdrNameToHsExpr rdrname) typ
+                    tryWellTypedFill pm hole (rdrNameToHsExpr (nameRdrName rdrname)) typ
               let !cache' = M.insert (StringEquality df typ) mparsedModule cache
                   !candidates' =
                     case mparsedModule of
