@@ -220,17 +220,20 @@ declarationCompletions declaration =
   timed
     "declarationCompletions"
     (do rdrNames <-
-          timed "declarationCompletions/getRdrNamesInScope" getRdrNamesInScope
+          timed
+            "declarationCompletions/getRdrNamesInScope"
+            (fmap (filter (isValOcc . rdrNameOcc)) getRdrNamesInScope)
         names <-
           timed
             "declarationCompletions/combine names"
             (do let scopeNames =
                       map
                         nameRdrName
-                        (fromMaybe
-                           []
-                           (modInfoTopLevelScope
-                              (declarationModuleInfo declaration)))
+                        ((filter isValName)
+                           (fromMaybe
+                              []
+                              (modInfoTopLevelScope
+                                 (declarationModuleInfo declaration))))
                     !names =
                       foldl'
                         (flip S.insert)
@@ -450,7 +453,7 @@ typecheckModuleNoDeferring parsed = do
 -- | Convert parsed source groups into one bag of binds.
 _parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
 _parsedModuleToBag =
-  listToBag . mapMaybe valD . _ . unLoc . pm_parsed_source
+  listToBag . mapMaybe valD . hsmodDecls . unLoc . pm_parsed_source
   where
     valD =
       \case
