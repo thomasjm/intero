@@ -95,6 +95,7 @@ import           Outputable hiding ( printForUser, printForUserPartWay, bold )
 #endif
 
 -- Other random utilities
+import RdrName
 import           BasicTypes hiding ( isTopLevel )
 import           Config
 import           Digraph
@@ -332,7 +333,7 @@ fillCmd =
                                intercalate
                                  ", "
                                  (map
-                                    (\s -> showPpr df (Completion.substitutionReplacement s))
+                                    (\s -> showRdrName df (Completion.substitutionReplacement s))
                                     (Completion.declarationCompletionSubstitutions c))))
                            cs
                    _ ->
@@ -341,6 +342,14 @@ fillCmd =
                Nothing ->
                  liftIO
                    (putStrLn ("Couldn't find loaded module with name: " ++ name))))
+
+showRdrName :: DynFlags -> GHC.RdrName -> String
+showRdrName df n =
+  case n of
+    Unqual occName -> "Unqual " ++ showPpr df occName
+    Qual m occName -> "Qual " ++ showPpr df m ++ " " ++ showPpr df occName
+    Orig m occName -> "Orig " ++ showPpr df m ++ " " ++ showPpr df occName
+    Exact name -> "Exact " ++ showPpr df name
 
 withFillInput :: (String -> Int -> InputT GHCi ()) -> String -> InputT GHCi ()
 withFillInput cont input =

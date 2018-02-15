@@ -23,7 +23,6 @@ module Completion
   ) where
 
 import           Bag
-import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Data.Generics
@@ -35,11 +34,9 @@ import           Data.Time
 import           DynFlags
 import           FastString
 import           GHC
-import           HscMain
 import           HscTypes
 import           Name
 import           Outputable
-import           RdrName
 import           RdrName
 import           SrcLoc
 import           TcRnDriver
@@ -220,21 +217,37 @@ declarationCompletions :: GhcMonad m => Declaration -> m [DeclarationCompletion]
 declarationCompletions declaration =
   timed
     "declarationCompletions"
-    (do rdrNames <-
-          timed
-            "declarationCompletions/getRdrNamesInScope"
-            (fmap (filter (isValOcc . rdrNameOcc)) getRdrNamesInScope)
-        names <-
+    (do names <-
           timed
             "declarationCompletions/combine names"
-            (do let scopeNames =
-                      map
-                        nameRdrName
-                        ((filter isValName)
-                           (fromMaybe
-                              []
-                              (modInfoTopLevelScope
-                                 (declarationModuleInfo declaration))))
+            (do rdrNames <-
+                  fmap
+                    (mapMaybe
+                       (\rdrname ->
+                          if isValOcc (rdrNameOcc rdrname)
+                            then case rdrname of
+                                   Qual {} -> Just rdrname
+                                   Exact name ->
+                                     Just
+                                       (Qual
+                                          (moduleName (nameModule name))
+                                          (nameOccName name))
+                                   _ -> Nothing
+                            else Nothing))
+                    getRdrNamesInScope
+                let scopeNames =
+                      mapMaybe
+                        (\rdrname ->
+                           if isValName rdrname
+                             then Just
+                                    (Qual
+                                       (moduleName (nameModule rdrname))
+                                       (nameOccName rdrname))
+                             else Nothing)
+                        (fromMaybe
+                           []
+                           (modInfoTopLevelScope
+                              (declarationModuleInfo declaration)))
                     !names =
                       foldl'
                         (flip S.insert)
@@ -262,6 +275,14 @@ declarationCompletions declaration =
              (declarationParsedModule declaration)
              (declarationHoles df declaration)))
 
+-- showRdrName :: DynFlags -> GHC.RdrName -> String
+-- showRdrName df n =
+--   case n of
+--     Unqual o -> "Unqual " ++ showPpr df o
+--     Qual m o -> "Qual " ++ showPpr df m ++ " " ++ showPpr df o
+--     Orig m o -> "Orig " ++ showPpr df m ++ " " ++ showPpr df o
+--     Exact name -> "Exact " ++ showPpr df name
+
 -- | Collect sets of compatible completions of holes for the
 -- declaration.
 collectCompletions ::
@@ -280,13 +301,6 @@ collectCompletions rdrNames parsedModule0 holes0 =
         timed
           ("collectCompletions/getWellTypedFills for " ++ show hole)
           (getWellTypedFills parsedModule hole rdrNames)
-      {-trace
-        (show
-           ( "hole"
-           , hole
-           , "rdrnames"
-           , map (occNameString . rdrNameOcc . fst) rdrNamesAndParsedModules))
-        (pure ())-}
       fmap
         concat
         (mapM
@@ -454,7 +468,7 @@ typecheckModuleNoDeferring parsed = do
 -- | Convert parsed source groups into one bag of binds.
 _parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
 _parsedModuleToBag =
-  listToBag . mapMaybe valD . hsmodDecls . unLoc . pm_parsed_source
+  listToBag . mapMaybe valD . _ . unLoc . pm_parsed_source
   where
     valD =
       \case
