@@ -134,10 +134,11 @@ data Substitution = Substitution
   { substitutionHole :: !Hole
   , substitutionReplacement :: !Name
   , substitutionString :: !String
+  , substitutionType :: !Type
   }
 
 instance Show Substitution where
-  showsPrec p (Substitution hole name _q) =
+  showsPrec p (Substitution hole name _q _ty) =
     showString "Substitution {substitutionHole = " .
     showsPrec (p + 1) hole .
     showString ", substitutionReplacement = " . gshows name . showString "}"
@@ -272,7 +273,7 @@ collectCompletions gre names parsedModule0 holes0 =
       fmap
         concat
         (mapM
-           (\(name, parsedModule') -> do
+           (\(name, typ, parsedModule') -> do
               sets <- go parsedModule' holes
               pure
                 (if null sets
@@ -280,13 +281,15 @@ collectCompletions gre names parsedModule0 holes0 =
                               hole
                               name
                               (makeReplacementString gre name)
+                              typ
                           ]
                         ]
                    else map
                           ((Substitution
                               hole
                               name
-                              (makeReplacementString gre name)) :)
+                              (makeReplacementString gre name)
+                              typ) :)
                           sets))
            namesAndParsedModules)
 
@@ -350,7 +353,7 @@ getWellTypedFills ::
   => ParsedModule
   -> Hole
   -> [(Name, Type)]
-  -> m [(Name, ParsedModule)]
+  -> m [(Name, Type, ParsedModule)]
 getWellTypedFills pm hole names = do
   df <- getSessionDynFlags
   let hty = normalize (holeType hole)
@@ -367,7 +370,7 @@ getWellTypedFills pm hole names = do
                   !candidates' =
                     case mparsedModule of
                       Nothing -> candidates
-                      Just parsedModule -> (rdrname, parsedModule) : candidates
+                      Just parsedModule -> (rdrname, typ, parsedModule) : candidates
               pure (cache', candidates')))
        (mempty, [])
        (filter (unifies hty . normalize . snd) names))
