@@ -23,15 +23,14 @@ module Completion
   ) where
 
 import           Bag
-import           Control.DeepSeq
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class
-import           Data.Function
 import           Data.Generics
 import           Data.List
 import qualified Data.Map.Strict as M
 import           Data.Maybe
+import qualified Data.Set as S
 import           Data.Time
 import           DynFlags
 import           FastString
@@ -43,6 +42,7 @@ import           Outputable
 import           RdrName
 import           SrcLoc
 import           TcRnDriver
+import           Text.Printf
 import           TyCoRep
 import           TyCon
 import           Unify
@@ -56,8 +56,12 @@ timed label m = do
   start <- liftIO getCurrentTime
   !v <- m
   end <- liftIO getCurrentTime
-  liftIO (putStrLn (label ++ " took " ++ show (diffUTCTime end start)))
+  liftIO (putStrLn (label ++ " took " ++ formatDiff (diffUTCTime end start)))
   pure v
+
+formatDiff :: NominalDiffTime -> String
+formatDiff d =
+  printf "%.0fms" (realToFrac (d*1000) :: Double)
 
 -- | A module which can be completed. Cannot contain type errors,
 -- including deferred ones.
@@ -212,45 +216,47 @@ declarationHoles df declaration = go declaration
 
 -- | Get completions for a declaration.
 declarationCompletions :: GhcMonad m => Declaration -> m [DeclarationCompletion]
-declarationCompletions declaration = do
-  rdrnames <-
-    timed "declarationCompletions/getRdrNamesInScope" getRdrNamesInScope
-  let names0 =
-        filter
-          (not . (`elem` ["undefined"]) . occNameString . rdrNameOcc)
-          (nubBy
-             (on (==) (occNameString . rdrNameOcc))
-             (rdrnames ++
-              map
-                nameRdrName
-                (fromMaybe
-                   []
-                   (modInfoTopLevelScope (declarationModuleInfo declaration)))))
-  names <-
-    timed
-      "declarationCompletions/force names"
-      (do !v <- pure (force names0)
-          pure v)
-  hscEnv <- getSession
-  df <- getSessionDynFlags
-  typedNames <-
-    timed
-      "declarationCompletions/typedNames"
-      (liftIO
-         (mapM
-            (\rdrName -> do
-               (_, ty) <- tcRnExpr hscEnv TM_Inst (rdrNameToLHsExpr rdrName)
-                                                       {-(trace
-                                                          (occNameString (rdrNameOcc rdrName) ++ " :: " ++ showPpr df ty)
-                                                          (pure ()))-}
-               pure (fmap (rdrName, ) ty))
-            names))
+declarationCompletions declaration =
   timed
-    "declarationCompletions/collectCompletions"
-    (collectCompletions
-       (catMaybes typedNames)
-       (declarationParsedModule declaration)
-       (declarationHoles df declaration))
+    "declarationCompletions"
+    (do rdrNames <-
+          timed "declarationCompletions/getRdrNamesInScope" getRdrNamesInScope
+        names <-
+          timed
+            "declarationCompletions/combine names"
+            (do let scopeNames =
+                      map
+                        nameRdrName
+                        (fromMaybe
+                           []
+                           (modInfoTopLevelScope
+                              (declarationModuleInfo declaration)))
+                    !names =
+                      foldl'
+                        (flip S.insert)
+                        (foldl' (flip S.insert) mempty rdrNames)
+                        scopeNames
+                liftIO (putStrLn ("Names: " ++ show (S.size names)))
+                pure names)
+        hscEnv <- getSession
+        df <- getSessionDynFlags
+        typedNames <-
+          timed
+            "declarationCompletions/typedNames"
+            (liftIO
+               (foldM
+                  (\(!names') rdrName -> do
+                     (_, ty) <-
+                       tcRnExpr hscEnv TM_Inst (rdrNameToLHsExpr rdrName)
+                     pure (maybe names' (: names') (fmap (rdrName, ) ty)))
+                  []
+                  names))
+        timed
+          "declarationCompletions/collectCompletions"
+          (collectCompletions
+             typedNames
+             (declarationParsedModule declaration)
+             (declarationHoles df declaration)))
 
 -- | Collect sets of compatible completions of holes for the
 -- declaration.
@@ -320,45 +326,21 @@ getWellTypedFills pm hole names = do
   fmap
     snd
     (foldM
-       (\(!cache, candidates) (rdrname, typ) -> timed ("getWellTypedFills/foldM/" ++ showPpr df rdrname) (do
-           mparsedModule <-
-             (case M.lookup (StringEquality df typ) cache of
-                Just mparsedModule
-                  -- trace ("Type cached: " ++ showPpr df typ)
-                 -> (pure mparsedModule)
-                Nothing
-                  -- trace
-                  --   ("No cache for: " ++ showPpr df typ)
-                 ->
-                  (do if {-unifiable typ (holeType hole)-}
-                         isJust (tcUnifyTyKi (normalize typ) hty)
-                        then do
-                          {-liftIO
-                            (putStrLn
-                               ("tryWellTypedFill: " ++
-                                showPpr df rdrname ++
-                                " :: " ++
-                                showPpr df typ ++
-                                " unifiable with " ++ showPpr df (holeType hole)))-}
-                          tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)
-                        else pure Nothing))
-           pure
-             ( M.insert (StringEquality df typ) mparsedModule cache
-             , case mparsedModule of
-                 Nothing -> candidates
-                 Just parsedModule -> (rdrname, parsedModule) : candidates)))
+       (\(!cache, !candidates) (!rdrname, !typ) ->
+          (do mparsedModule <-
+                case M.lookup (StringEquality df typ) cache of
+                  Just mparsedModule -> pure mparsedModule
+                  Nothing -> tryWellTypedFill pm hole (rdrNameToHsExpr rdrname)
+              let !cache' = M.insert (StringEquality df typ) mparsedModule cache
+                  !candidates' =
+                    case mparsedModule of
+                      Nothing -> candidates
+                      Just parsedModule -> (rdrname, parsedModule) : candidates
+              pure (cache', candidates')))
        (mempty, [])
-       names)
-                            -- trace
-                            --   ("Skipping " ++
-                            --    showPpr df rdrname ++
-                            --    " :: " ++
-                            --    showPpr df typ ++
-                            --    " which contradicts hole type " ++
-                            --    showPpr df (holeType hole) ++
-                            --    ", unifiable:\n" ++
-                            --    show (T df typ) ++
-                            --    "\n" ++ show (T df (holeType hole)))
+       (filter
+          (\(rdrname, typ) -> isJust (tcUnifyTyKi (normalize typ) hty))
+          names))
 
 data T = T DynFlags Type
 instance Show T where
@@ -410,36 +392,11 @@ tryWellTypedFill ::
 tryWellTypedFill pm hole expr =
   timed
     "tryWellTypedFill"
-    (do hscEnv <- getSession
-        df <- getSessionDynFlags
-        let generatedString =
-              showPpr' df expr ++ " :: " ++ showPpr df (holeType hole)
-   -- hscImport
-        ty <-
-          timed
-            "tryWellTypedFill/hscTcExpr"
-            (liftIO
-               (catch
-                  (fmap Just (hscTcExpr hscEnv TM_Inst generatedString))
-                  ((\e -> do
-                      print e
-                      pure Nothing) :: SomeException -> IO (Maybe Type))))
-   -- If we can't type-check just that expression with an explicit
-   -- signature, we needn't bother with the module.
-        case ty of
-          Nothing -> do
-            -- liftIO (putStrLn ("Could not unify, skipping: " ++ generatedString))
-            pure Nothing
-          Just {} ->
-            timed
-              "tryWellTypedFill/typecheckModuleNoDeferring"
-              (handleSourceError
-                 (const (pure Nothing))
-                 (fmap
-                    (Just . tm_parsed_module)
-                    (typecheckModuleNoDeferring (fillHole pm hole expr)))))
-  where
-    showPpr' df thing = showSDocForUser df alwaysQualify (ppr thing)
+    (handleSourceError
+       (const (pure Nothing))
+       (fmap
+          (Just . tm_parsed_module)
+          (typecheckModuleNoDeferring (fillHole pm hole expr))))
 
 --------------------------------------------------------------------------------
 -- Filling holes in the AST
@@ -493,7 +450,7 @@ typecheckModuleNoDeferring parsed = do
 -- | Convert parsed source groups into one bag of binds.
 _parsedModuleToBag :: ParsedModule -> Bag (LHsBindLR RdrName RdrName)
 _parsedModuleToBag =
-  listToBag . mapMaybe valD . hsmodDecls . unLoc . pm_parsed_source
+  listToBag . mapMaybe valD . _ . unLoc . pm_parsed_source
   where
     valD =
       \case
