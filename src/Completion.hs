@@ -29,7 +29,6 @@ import           Data.Generics
 import           Data.List
 import qualified Data.Map.Strict as M
 import           Data.Maybe
-import qualified Data.Set as S
 import           Data.Time
 import           DynFlags
 import           FastString
@@ -220,9 +219,7 @@ declarationCompletions declaration =
     (do names <-
           timed
             "declarationCompletions/combine names"
-            (do rdrNames <-
-                  fmap (filter (isValOcc . rdrNameOcc)) getRdrNamesInScope
-                let scopeNames =
+            (do let names =
                       map
                         nameRdrName
                         (filter
@@ -231,12 +228,7 @@ declarationCompletions declaration =
                               []
                               (modInfoTopLevelScope
                                  (declarationModuleInfo declaration))))
-                    !names =
-                      foldl'
-                        (flip S.insert)
-                        (foldl' (flip S.insert) mempty rdrNames)
-                        scopeNames
-                liftIO (putStrLn ("Names: " ++ show (S.size names)))
+                liftIO (putStrLn ("Names: " ++ show (length names)))
                 pure names)
         hscEnv <- getSession
         df <- getSessionDynFlags
