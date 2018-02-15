@@ -29,6 +29,7 @@ import           Data.Generics
 import           Data.List
 import qualified Data.Map.Strict as M
 import           Data.Maybe
+import           Data.Ord
 import           Data.Time
 import           DynFlags
 import           FastString
@@ -245,11 +246,30 @@ declarationCompletions declaration =
                   names))
         timed
           "declarationCompletions/collectCompletions"
-          (collectCompletions
-             (declarationGlobalRdrEnv declaration)
-             typedNames
-             (declarationParsedModule declaration)
-             (declarationHoles df declaration)))
+          (fmap
+             (sortBy
+                (flip
+                   (comparing
+                      (sum .
+                       map (typeSpecificity . substitutionType) .
+                       declarationCompletionSubstitutions))))
+             (collectCompletions
+                (declarationGlobalRdrEnv declaration)
+                typedNames
+                (declarationParsedModule declaration)
+                (declarationHoles df declaration))))
+
+-- | A vague weighting for relevance of types. We assume that more
+-- specific types are more appropriate.
+typeSpecificity :: Type -> Int
+typeSpecificity t = sum (map rate (listify ((> 0) . rate) t))
+  where
+    rate =
+      \case
+        TyConApp {} -> 10
+        LitTy {} -> 5
+        FunTy {} -> 1
+        _ -> 0
 
 -- | Collect sets of compatible completions of holes for the
 -- declaration.
