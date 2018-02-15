@@ -40,6 +40,7 @@ import           HscTypes
 import           Name
 import           Outputable
 import           RdrName
+import           RdrName
 import           SrcLoc
 import           TcRnDriver
 import           Text.Printf
@@ -342,7 +343,7 @@ getWellTypedFills pm hole names = do
               pure (cache', candidates')))
        (mempty, [])
        (filter
-          (\(rdrname, typ) -> isJust (tcUnifyTyKi (normalize typ) hty))
+          (\(_, typ) -> isJust (tcUnifyTyKi (normalize typ) hty))
           names))
 
 data T = T DynFlags Type
