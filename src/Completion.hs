@@ -133,10 +133,11 @@ data DeclarationCompletion = DeclarationCompletion
 data Substitution = Substitution
   { substitutionHole :: !Hole
   , substitutionReplacement :: !Name
+  , substitutionString :: !String
   }
 
 instance Show Substitution where
-  showsPrec p (Substitution hole name) =
+  showsPrec p (Substitution hole name _q) =
     showString "Substitution {substitutionHole = " .
     showsPrec (p + 1) hole .
     showString ", substitutionReplacement = " . gshows name . showString "}"
@@ -219,18 +220,12 @@ declarationCompletions :: GhcMonad m => Declaration -> m [DeclarationCompletion]
 declarationCompletions declaration =
   timed
     "declarationCompletions"
-    (do names <-
-          timed
-            "declarationCompletions/combine names"
-            (do let names =
-                      filter
-                        isValName
-                        (fromMaybe
-                           []
-                           (modInfoTopLevelScope
-                              (declarationModuleInfo declaration)))
-                liftIO (putStrLn ("Names: " ++ show (length names)))
-                pure names)
+    (do let names =
+              filter
+                isValName
+                (fromMaybe
+                   []
+                   (modInfoTopLevelScope (declarationModuleInfo declaration)))
         hscEnv <- getSession
         df <- getSessionDynFlags
         typedNames <-
@@ -250,6 +245,7 @@ declarationCompletions declaration =
         timed
           "declarationCompletions/collectCompletions"
           (collectCompletions
+             (declarationGlobalRdrEnv declaration)
              typedNames
              (declarationParsedModule declaration)
              (declarationHoles df declaration)))
@@ -258,30 +254,57 @@ declarationCompletions declaration =
 -- declaration.
 collectCompletions ::
      GhcMonad f
-  => [(Name, Type)]
+  => GlobalRdrEnv
+  -> [(Name, Type)]
   -> ParsedModule
   -> [Hole]
   -> f [DeclarationCompletion]
-collectCompletions rdrNames parsedModule0 holes0 =
+collectCompletions gre names parsedModule0 holes0 =
   fmap (map DeclarationCompletion) (go parsedModule0 holes0)
   where
     go :: GhcMonad f => ParsedModule -> [Hole] -> f [[Substitution]]
     go _ [] = pure []
     go parsedModule (hole:holes) = do
-      rdrNamesAndParsedModules <-
+      namesAndParsedModules <-
         timed
           ("collectCompletions/getWellTypedFills for " ++ show hole)
-          (getWellTypedFills parsedModule hole rdrNames)
+          (getWellTypedFills parsedModule hole names)
       fmap
         concat
         (mapM
-           (\(rdrName, parsedModule') -> do
+           (\(name, parsedModule') -> do
               sets <- go parsedModule' holes
               pure
                 (if null sets
-                   then [[Substitution hole rdrName]]
-                   else map ((Substitution hole rdrName) :) sets))
-           rdrNamesAndParsedModules)
+                   then [ [ Substitution
+                              hole
+                              name
+                              (makeReplacementString gre name)
+                          ]
+                        ]
+                   else map
+                          ((Substitution
+                              hole
+                              name
+                              (makeReplacementString gre name)) :)
+                          sets))
+           namesAndParsedModules)
+
+-- | Make a string, qualified if necessary.
+makeReplacementString :: GlobalRdrEnv -> Name -> String
+makeReplacementString gre name =
+  case lookupGRE_Name gre name of
+    Nothing -> unqualified
+    Just grelt ->
+      if gre_lcl grelt || any unQualSpecOK (gre_imp grelt)
+        then unqualified
+        else case gre_imp grelt of
+               (ImpSpec (ImpDeclSpec {is_qual = True, is_as = m}) _:_) ->
+                 qualified m
+               _ -> unqualified
+  where
+    unqualified = occNameString (nameOccName name)
+    qualified m = moduleNameString m ++ "." ++ unqualified
 
 --------------------------------------------------------------------------------
 -- Testing out completions
