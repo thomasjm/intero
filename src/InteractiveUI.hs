@@ -397,13 +397,13 @@ fillCmd h =
 withHolesInput :: (FilePath -> Int -> GHCi ()) -> String -> GHCi ()
 withHolesInput cont input =
   case words input of
-    [name, read -> line] -> cont name line
+    [read -> name, read -> line] -> cont name line
     _ -> liftIO (putStrLn "Invalid :holes call. Should be :holes <filename> <line number>")
 
 withFillInput :: (FilePath -> Int -> Int -> GHCi ()) -> String -> GHCi ()
 withFillInput cont input =
   case words input of
-    [name, read -> line, read -> col] -> cont name line col
+    [read -> name, read -> line, read -> col] -> cont name line col
     _ -> liftIO (putStrLn "Invalid :fill call. Should be :fill <filename> <line number> <column number>")
 
 readOnlyCommands :: [(String, Handle -> String -> GHCi ())]
@@ -413,6 +413,8 @@ readOnlyCommands =
   , ("uses", findAllUses)
   , ("loc-at", locationAt)
   , ("complete-at", completeAt)
+  , ("fill", fillCmd)
+  , ("holes", holesCmd)
   ]
 
 -- We initialize readline (in the interactiveUI function) to use

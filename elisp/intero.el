@@ -1083,6 +1083,57 @@ pragma is supported also."
         (list prefix-start prefix-end prefix-value prefix-type)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Hole filling
+
+(defun intero-holes-backend (command &optional arg &rest ignored)
+  "Backend for making hole completions."
+  (interactive (list 'interactive))
+  (let ((company-minimum-prefix-length 1))
+    (cl-case command
+      (interactive
+       (company-begin-backend 'intero-holes-backend))
+      (prefix
+       (intero-grab-hole-string))
+      (candidates
+       (let ((point (intero-grab-hole-point)))
+         (when point
+           (intero-get-fill-at point)))))))
+
+(defun intero-get-fill-at (beg)
+  "Make the blocking call to the process."
+  (split-string
+   (replace-regexp-in-string
+    "\n$" ""
+    (intero-blocking-network-call
+     'backend
+     (format
+      ":fill %S %d %d"
+      (intero-localize-path (intero-temp-file-name))
+      (save-excursion (goto-char beg)
+                      (line-number-at-pos))
+      (save-excursion (goto-char beg)
+                      (1+ (current-column))))))
+   "[\r\n]"))
+
+(defun intero-grab-hole-string ()
+  "When user is at a hole _ or _foo, return the starting point of
+that hole."
+  (let ((beg-end (intero-ident-pos-at-point)))
+    (when beg-end
+      (let ((string (buffer-substring-no-properties (car beg-end) (cdr beg-end))))
+        (when (string-match "^_" string)
+          string)))))
+
+(defun intero-grab-hole-point ()
+  "When user is at a hole _ or _foo, return the starting point of
+that hole."
+  (let ((beg-end (intero-ident-pos-at-point)))
+    (when beg-end
+      (let ((string (buffer-substring-no-properties (car beg-end) (cdr beg-end))))
+        (when (string-match "^_" string)
+          (car beg-end))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; ELDoc integration
 
 (defvar-local intero-eldoc-cache (make-hash-table :test 'equal)
@@ -1419,84 +1470,84 @@ May return a qualified name."
     (when reg
       (buffer-substring-no-properties (car reg) (cdr reg)))))
 
-(defun intero-ident-pos-at-point ()
-  "Return the span of the identifier near point going backward.
+(defun intero-ident-pos-at-point () ()
+       "Return the span of the identifier near point going backward.
 Returns nil if no identifier found or point is inside string or
 comment.  May return a qualified name."
-  (when (not (nth 8 (syntax-ppss)))
-    ;; Do not handle comments and strings
-    (let (start end)
-      ;; Initial point position is non-deterministic, it may occur anywhere
-      ;; inside identifier span, so the approach is:
-      ;; - first try go left and find left boundary
-      ;; - then try go right and find right boundary
-      ;;
-      ;; In both cases assume the longest path, e.g. when going left take into
-      ;; account than point may occur at the end of identifier, when going right
-      ;; take into account that point may occur at the beginning of identifier.
-      ;;
-      ;; We should handle `.` character very careful because it is heavily
-      ;; overloaded.  Examples of possible cases:
-      ;; Control.Monad.>>=  -- delimiter
-      ;; Control.Monad.when -- delimiter
-      ;; Data.Aeson..:      -- delimiter and operator symbol
-      ;; concat.map         -- composition function
-      ;; .?                 -- operator symbol
-      (save-excursion
-        ;; First, skip whitespace if we're on it, moving point to last
-        ;; identifier char.  That way, if we're at "map ", we'll see the word
-        ;; "map".
-        (when (and (looking-at-p (rx eol))
-                   (not (bolp)))
-          (backward-char))
-        (when (and (not (eobp))
-                   (eq (char-syntax (char-after)) ? ))
-          (skip-chars-backward " \t")
-          (backward-char))
-        ;; Now let's try to go left.
-        (save-excursion
-          (if (not (intero-mode--looking-at-varsym))
-              ;; Looking at non-operator char, this is quite simple
-              (progn
-                (skip-syntax-backward "w_")
-                ;; Remember position
-                (setq start (point)))
-            ;; Looking at operator char.
-            (while (and (not (bobp))
-                        (intero-mode--looking-at-varsym))
-              ;; skip all operator chars backward
-              (setq start (point))
-              (backward-char))
-            ;; Extra check for case when reached beginning of the buffer.
-            (when (intero-mode--looking-at-varsym)
-              (setq start (point))))
-          ;; Slurp qualification part if present.  If identifier is qualified in
-          ;; case of non-operator point will stop before `.` dot, but in case of
-          ;; operator it will stand at `.` delimiting dot.  So if we're looking
-          ;; at `.` let's step one char forward and try to get qualification
-          ;; part.
-          (goto-char start)
-          (when (looking-at-p (rx "."))
-            (forward-char))
-          (let ((pos (intero-mode--skip-qualification-backward)))
-            (when pos
-              (setq start pos))))
-        ;; Finally, let's try to go right.
-        (save-excursion
-          ;; Try to slurp qualification part first.
-          (skip-syntax-forward "w_")
-          (setq end (point))
-          (while (and (looking-at-p (rx "." upper))
-                      (not (zerop (progn (forward-char)
-                                         (skip-syntax-forward "w_")))))
-            (setq end (point)))
-          ;; If point was at non-operator we already done, otherwise we need an
-          ;; extra check.
-          (while (intero-mode--looking-at-varsym)
-            (forward-char)
-            (setq end (point))))
-        (when (not (= start end))
-          (cons start end))))))
+       (when (not (nth 8 (syntax-ppss)))
+         ;; Do not handle comments and strings
+         (let (start end)
+           ;; Initial point position is non-deterministic, it may occur anywhere
+           ;; inside identifier span, so the approach is:
+           ;; - first try go left and find left boundary
+           ;; - then try go right and find right boundary
+           ;;
+           ;; In both cases assume the longest path, e.g. when going left take into
+           ;; account than point may occur at the end of identifier, when going right
+           ;; take into account that point may occur at the beginning of identifier.
+           ;;
+           ;; We should handle `.` character very careful because it is heavily
+           ;; overloaded.  Examples of possible cases:
+           ;; Control.Monad.>>=  -- delimiter
+           ;; Control.Monad.when -- delimiter
+           ;; Data.Aeson..:      -- delimiter and operator symbol
+           ;; concat.map         -- composition function
+           ;; .?                 -- operator symbol
+           (save-excursion
+             ;; First, skip whitespace if we're on it, moving point to last
+             ;; identifier char.  That way, if we're at "map ", we'll see the word
+             ;; "map".
+             (when (and (looking-at-p (rx eol))
+                        (not (bolp)))
+               (backward-char))
+             (when (and (not (eobp))
+                        (eq (char-syntax (char-after)) ? ))
+               (skip-chars-backward " \t")
+               (backward-char))
+             ;; Now let's try to go left.
+             (save-excursion
+               (if (not (intero-mode--looking-at-varsym))
+                   ;; Looking at non-operator char, this is quite simple
+                   (progn
+                     (skip-syntax-backward "w_")
+                     ;; Remember position
+                     (setq start (point)))
+                 ;; Looking at operator char.
+                 (while (and (not (bobp))
+                             (intero-mode--looking-at-varsym))
+                   ;; skip all operator chars backward
+                   (setq start (point))
+                   (backward-char))
+                 ;; Extra check for case when reached beginning of the buffer.
+                 (when (intero-mode--looking-at-varsym)
+                   (setq start (point))))
+               ;; Slurp qualification part if present.  If identifier is qualified in
+               ;; case of non-operator point will stop before `.` dot, but in case of
+               ;; operator it will stand at `.` delimiting dot.  So if we're looking
+               ;; at `.` let's step one char forward and try to get qualification
+               ;; part.
+               (goto-char start)
+               (when (looking-at-p (rx "."))
+                 (forward-char))
+               (let ((pos (intero-mode--skip-qualification-backward)))
+                 (when pos
+                   (setq start pos))))
+             ;; Finally, let's try to go right.
+             (save-excursion
+               ;; Try to slurp qualification part first.
+               (skip-syntax-forward "w_")
+               (setq end (point))
+               (while (and (looking-at-p (rx "." upper))
+                           (not (zerop (progn (forward-char)
+                                              (skip-syntax-forward "w_")))))
+                 (setq end (point)))
+               ;; If point was at non-operator we already done, otherwise we need an
+               ;; extra check.
+               (while (intero-mode--looking-at-varsym)
+                 (forward-char)
+                 (setq end (point))))
+             (when (not (= start end))
+               (cons start end))))))
 
 (defun intero-mode--looking-at-varsym ()
   "Return t when point stands at operator symbol."
@@ -1644,8 +1695,8 @@ path."
                       (intero-make-temp-file
                        "intero" nil
                        (concat "-TEMP." (if (buffer-file-name)
-                                       (file-name-extension (buffer-file-name))
-                                     "hs")))))
+                                            (file-name-extension (buffer-file-name))
+                                          "hs")))))
                (puthash intero-temp-file-name
                         (current-buffer)
                         intero-temp-file-buffer-mapping)
@@ -1659,8 +1710,8 @@ path."
                    (intero-make-temp-file
                     "intero" nil
                     (concat "-STAGING." (if (buffer-file-name)
-                                    (file-name-extension (buffer-file-name))
-                                  "hs"))))))
+                                            (file-name-extension (buffer-file-name))
+                                          "hs"))))))
       (with-temp-file fname
         (insert contents))
       fname)))
