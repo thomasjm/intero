@@ -83,7 +83,7 @@ executable intero
     containers,
     time,
     network,
-    random, deepseq
+    random, deepseq, mtl
 
   if impl(ghc>=8.0.1)
     build-depends:

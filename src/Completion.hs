@@ -25,6 +25,7 @@ module Completion
 import           Bag
 import           Control.Monad
 import           Control.Monad.IO.Class
+import           Control.Monad.State
 import           Data.Generics
 import           Data.List
 import qualified Data.Map.Strict as M
@@ -36,6 +37,7 @@ import           FastString
 import           GHC
 import           HscTypes
 import           Name
+import           OccName
 import           Outputable
 import           RdrName
 import           SrcLoc
@@ -44,7 +46,10 @@ import           TcRnTypes (tcg_rdr_env)
 import           Text.Printf
 import           TyCoRep
 import           TyCon
+import           TysWiredIn
 import           Unify
+import           Unique
+import           Var
 
 --------------------------------------------------------------------------------
 -- Types
@@ -376,7 +381,7 @@ getWellTypedFills ::
   -> m [(Name, Type, ParsedModule)]
 getWellTypedFills pm hole names = do
   df <- getSessionDynFlags
-  let hty = normalize (holeType hole)
+  let hty = normalize df (holeType hole)
   fmap
     snd
     (foldM
@@ -393,17 +398,34 @@ getWellTypedFills pm hole names = do
                       Just parsedModule -> (rdrname, typ, parsedModule) : candidates
               pure (cache', candidates')))
        (mempty, [])
-       (filter (unifies hty . normalize . snd) names))
+       (filter (\(name, ty) -> unifies' df hty (normalize df ty) name) names))
+
+unifies' :: DynFlags -> Type -> Type -> Name -> Bool
+unifies' df x y _name =
+  -- trace
+  --   ("Unifies? " ++
+  --    showPpr df name ++
+  --    " :: " ++
+  --    showPpr df y ++
+  --    "\n    " ++
+  --    show (T df x) ++
+  --    "\n    against\n    " ++ show (T df y) ++ "\n    => " ++ show (unifies df x y))
+    (unifies df x y)
 
 -- | The purpose of this function is to eliminate types that should
 -- not be tested with a full module type-check. This checker is
 -- stricter than GHC's own unifier, much stricter than Hoogle; it
 -- produces false negatives. But it should not produce false positives
 -- ideally.
-unifies :: Type -> Type -> Bool
-unifies t1 t2 = theirs t1 t2 && ours t1 t2
+unifies :: DynFlags -> Type -> Type -> Bool
+unifies _df t1 t2 = theirs t1 t2 && ours t1 t2
   where
-    theirs x y = isJust (tcUnifyTyKi x y)
+    theirs x y =
+      -- trace
+      --   ("theirs(" ++
+      --    showPpr df x ++
+      --    "," ++ showPpr df y ++ ")=>" ++ show (isJust (tcUnifyTyKi x y)))
+        (isJust (tcUnifyTyKi x y))
     -- Let them deal with lits:
     ours x@LitTy {} y@LitTy {} = theirs x y
     -- We assume a type variable unifies with anything, leave it to
@@ -436,6 +458,9 @@ unifies t1 t2 = theirs t1 t2 && ours t1 t2
     ours TyConApp {} _ = False
     ours _ TyConApp {} = False
 
+isAny :: DynFlags -> Type -> Bool
+isAny df t = showPpr df t == "Any"
+
 data T = T DynFlags Type
 instance Show T where
   showsPrec p (T df ty0) =
@@ -462,18 +487,34 @@ instance Show T where
         showString "(CastTy " . showsPrec (p + 1) (T df ty) . showString " _)"
       CoercionTy _ -> showString "(Coercion _)"
 
-normalize :: Type -> Type
-normalize =
-  \case
-    FunTy (TyConApp (tyConFlavour -> "class") _) x -> normalize x
-    ForAllTy _ x -> normalize x
-    CastTy x _ -> normalize x
-    FunTy x y -> FunTy (normalize x) (normalize y)
-    AppTy x y -> AppTy (normalize x) (normalize y)
-    TyConApp tycon xs -> TyConApp tycon (map normalize xs)
-    t@TyVarTy {} -> t
-    t@LitTy {} -> t
-    t@CoercionTy {} -> t
+-- | Strip out weird things from GHC's type system.
+normalize :: DynFlags -> Type -> Type
+normalize df t0 = evalState (go t0) 1
+  where
+    go =
+      \case
+        t@TyConApp {}
+          | isAny df t -> do
+            u <- get
+            modify (+ 1)
+            pure (makeTypeVariable u "was_Any")
+        FunTy (TyConApp (tyConFlavour -> "class") _) x -> go x
+        ForAllTy _ x -> go x
+        CastTy x _ -> go x
+        FunTy x y -> FunTy <$> (go x) <*> (go y)
+        AppTy x y -> AppTy <$> (go x) <*> (go y)
+        TyConApp tycon xs -> TyConApp <$> pure tycon <*> (mapM go xs)
+        t@TyVarTy {} -> pure t
+        t@LitTy {} -> pure t
+        t@CoercionTy {} -> pure t
+
+-- | Make a type variable. I have no idea how to create a truly unique
+-- name. This is bothersome.
+makeTypeVariable :: Int -> String -> Type
+makeTypeVariable u n = TyVarTy (mkTyVar name liftedTypeKind)
+  where
+    name =
+      mkInternalName (mkUnique 'Z' u) (mkOccName OccName.varName n) noSrcSpan
 
 -- | Try to fill a hole with the given expression; if it type-checks,
 -- we return the newly updated parse tree. Otherwise, we return Nothing.
