@@ -10,15 +10,11 @@
 module Completion
   ( getCompletableModule
   , declarationByLine
-  , declarationCompletions
   , declarationHoles
-  , fillHole
-  , timed
+  , holeSubstitutions
   , Declaration(..)
-  , DeclarationCompletion(..)
-  , Substitution(..)
   , Hole(..)
-  , ModuleSource(..)
+  , Substitution(..)
   , LineNumber(..)
   ) where
 
@@ -40,7 +36,6 @@ import           Name
 import           OccName
 import           Outputable
 import           RdrName
-import           SrcLoc
 import           TcRnDriver
 import           TcRnTypes (tcg_rdr_env)
 import           Text.Printf
@@ -78,7 +73,6 @@ data Declaration = Declaration
   { declarationBind :: !(HsBindLR Name Name)
     -- ^ The actual declaration, which we use to find holes and
     -- substitute them with candidate replacements.
-  , declarationSource :: !String
     -- ^ A sample source, which we use merely for debugging.
   , declarationRealSrcSpan :: !RealSrcSpan
     -- ^ A source span which we can provide to the client IDE.
@@ -94,17 +88,11 @@ data Declaration = Declaration
   }
 
 instance Show Declaration where
-  showsPrec p (Declaration b s real _parsedModule _renamedSource _ _ _) =
+  showsPrec p (Declaration b real _parsedModule _renamedSource _ _ _) =
     showString "Declaration {declarationBind = " .
     gshows b .
-    showString ", declarationSource = " .
-    showsPrec (p + 1) s .
     showString ", declarationRealSrcSpan = " .
     showsPrec (p + 1) real . showString "}"
-
--- | The source code of the module.
-newtype ModuleSource = ModuleSource String
-  deriving (Show)
 
 -- | An identifier for a declaration in the module.
 newtype DeclarationId = DeclarationId String
@@ -121,33 +109,27 @@ data Hole = Hole
   , holeName :: !OccName
   , holeType :: !Type
   , holeDf :: !DynFlags
+  , holeDeclaration :: !Declaration
   }
 
 instance Show Hole where
-  showsPrec p (Hole realSrcSpan name ty df) =
+  showsPrec p (Hole realSrcSpan name ty df _) =
     showString "Hole {holeRealSrcSpan = " .
     showsPrec (p + 1) realSrcSpan .
     showString ", holeName = " . gshows name . showString ", holeType = " .
     showString (showPpr df ty) . showString "}"
 
--- | Completion for a declaration.
-data DeclarationCompletion = DeclarationCompletion
-  { declarationCompletionSubstitutions :: [Substitution]
-  } deriving (Show)
-
 -- | Substition of a source span in the source code with a new string.
 data Substitution = Substitution
-  { substitutionHole :: !Hole
-  , substitutionReplacement :: !Name
+  { substitutionReplacement :: !Name
   , substitutionString :: !String
   , substitutionType :: !Type
   }
 
 instance Show Substitution where
-  showsPrec p (Substitution hole name _q _ty) =
-    showString "Substitution {substitutionHole = " .
-    showsPrec (p + 1) hole .
-    showString ", substitutionReplacement = " . gshows name . showString "}"
+  showsPrec _p (Substitution name _q _ty) =
+    showString "Substitution {substitutionReplacement = " .
+    gshows name . showString "}"
 
 --------------------------------------------------------------------------------
 -- Top-level API
@@ -162,25 +144,15 @@ getCompletableModule ms =
 
 -- | Find a declaration by line number. If the line is within a
 -- declaration in the module, return that declaration.
-declarationByLine ::
-     ModuleSource
-  -> CompletableModule
-  -> LineNumber
-  -> Maybe Declaration
-declarationByLine (ModuleSource src) (CompletableModule typecheckedModule) (LineNumber line) = do
+declarationByLine :: CompletableModule -> LineNumber -> Maybe Declaration
+declarationByLine (CompletableModule typecheckedModule) (LineNumber line) = do
   renamedModule <- tm_renamed_source typecheckedModule
   let binds = renamedSourceToBag renamedModule
   located <- find ((`realSpans` (line, 1)) . getLoc) (bagToList binds)
   realSrcSpan <- getRealSrcSpan (getLoc located)
-  let start = srcLocLine (realSrcSpanStart realSrcSpan)
-  let end = srcLocLine (realSrcSpanEnd realSrcSpan)
   pure
     (Declaration
-     { declarationSource =
-         intercalate
-           "\n"
-           (take (end - (start - 1)) (drop (start - 1) (lines src)))
-     , declarationBind = unLoc located
+     { declarationBind = unLoc located
      , declarationRealSrcSpan = realSrcSpan
      , declarationRenamedModule = renamedModule
      , declarationParsedModule = tm_parsed_module typecheckedModule
@@ -205,7 +177,13 @@ declarationHoles df declaration = go declaration
              Nothing -> Nothing
              Just typ ->
                pure
-                 (Hole {holeRealSrcSpan = src, holeName = name, holeType = typ, holeDf = df})) .
+                 (Hole
+                  { holeRealSrcSpan = src
+                  , holeName = name
+                  , holeType = typ
+                  , holeDf = df
+                  , holeDeclaration = declaration
+                  })) .
       listify (isJust . getHoleName) . declarationBind
     typeAt :: RealSrcSpan -> LHsExpr Id -> Maybe Type
     typeAt rs expr =
@@ -223,10 +201,10 @@ declarationHoles df declaration = go declaration
         _ -> Nothing
 
 -- | Get completions for a declaration.
-declarationCompletions :: GhcMonad m => Declaration -> m [DeclarationCompletion]
-declarationCompletions declaration =
+holeSubstitutions :: GhcMonad m => Hole -> m [Substitution]
+holeSubstitutions hole =
   timed
-    "declarationCompletions"
+    "holeSubstitutions"
     (do let names =
               filter
                 isValName
@@ -234,10 +212,9 @@ declarationCompletions declaration =
                    []
                    (modInfoTopLevelScope (declarationModuleInfo declaration)))
         hscEnv <- getSession
-        df <- getSessionDynFlags
         typedNames <-
           timed
-            "declarationCompletions/typedNames"
+            "holeSubstitutions/typedNames"
             (liftIO
                (foldM
                   (\(!names') rdrName -> do
@@ -249,20 +226,29 @@ declarationCompletions declaration =
                      pure (maybe names' (: names') (fmap (rdrName, ) ty)))
                   []
                   names))
-        timed
-          "declarationCompletions/collectCompletions"
-          (fmap
-             (sortBy
-                (flip
-                   (comparing
-                      (sum .
-                       map (typeSpecificity . substitutionType) .
-                       declarationCompletionSubstitutions))))
-             (collectCompletions
-                (declarationGlobalRdrEnv declaration)
-                typedNames
-                (declarationParsedModule declaration)
-                (declarationHoles df declaration))))
+        subs <-
+          timed
+            "holeSubstitutions/getWellTypedFills"
+            (getWellTypedFills
+               (declarationParsedModule declaration)
+               hole
+               typedNames)
+        pure
+          (sortBy
+             (flip (comparing (typeSpecificity . substitutionType)))
+             (map
+                (\(name, ty, _) ->
+                   Substitution
+                   { substitutionReplacement = name
+                   , substitutionType = ty
+                   , substitutionString =
+                       makeReplacementString
+                         (declarationGlobalRdrEnv declaration)
+                         name
+                   })
+                subs)))
+  where
+    declaration = holeDeclaration hole
 
 -- | A vague weighting for relevance of types. We assume that more
 -- specific types are more appropriate.
@@ -275,48 +261,6 @@ typeSpecificity t = sum (map rate (listify ((> 0) . rate) t))
         LitTy {} -> 5
         FunTy {} -> 1
         _ -> 0
-
--- | Collect sets of compatible completions of holes for the
--- declaration.
-collectCompletions ::
-     GhcMonad f
-  => GlobalRdrEnv
-  -> [(Name, Type)]
-  -> ParsedModule
-  -> [Hole]
-  -> f [DeclarationCompletion]
-collectCompletions gre names parsedModule0 holes0 =
-  fmap (map DeclarationCompletion) (go parsedModule0 holes0)
-  where
-    go :: GhcMonad f => ParsedModule -> [Hole] -> f [[Substitution]]
-    go _ [] = pure []
-    go parsedModule (hole:holes) = do
-      namesAndParsedModules <-
-        timed
-          ("collectCompletions/getWellTypedFills for " ++ show hole)
-          (getWellTypedFills parsedModule hole names)
-      fmap
-        concat
-        (mapM
-           (\(name, typ, parsedModule') -> do
-              sets <- go parsedModule' holes
-              pure
-                (if null sets
-                   then [ [ Substitution
-                              hole
-                              name
-                              (makeReplacementString gre name)
-                              typ
-                          ]
-                        ]
-                   else map
-                          ((Substitution
-                              hole
-                              name
-                              (makeReplacementString gre name)
-                              typ) :)
-                          sets))
-           namesAndParsedModules)
 
 -- | Make a string, qualified if necessary.
 makeReplacementString :: GlobalRdrEnv -> Name -> String
