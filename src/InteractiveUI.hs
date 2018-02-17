@@ -321,11 +321,7 @@ fillCmd =
                case Completion.declarationByLine
                       completable
                       (Completion.LineNumber line) of
-                 Nothing ->
-                   liftIO
-                     (putStrLn
-                        ("Unable to locate declaration containing line " ++
-                         show line))
+                 Nothing -> liftIO (putStrLn "Couldn't guess the declaration.")
                  Just declaration -> do
                    df <- GHC.getSessionDynFlags
                    case find
