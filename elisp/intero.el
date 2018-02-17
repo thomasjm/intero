@@ -1094,6 +1094,7 @@ pragma is supported also."
        (company-begin-backend 'intero-holes-backend))
       (prefix
        (intero-grab-hole-string))
+      (sorted t)
       (candidates
        (let ((point (intero-grab-hole-point)))
          (when point
