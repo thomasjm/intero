@@ -270,8 +270,7 @@ ghciCommands = [
   ("kind",      keepGoing' (kindOfType False),  completeIdentifier),
   ("kind!",     keepGoing' (kindOfType True),   completeIdentifier),
   ("load",      keepGoingPaths loadModule_,     completeHomeModuleOrFile),
-  ("fill",      keepGoing' (lifted fillCmd),             noCompletion),
-  ("holes",     keepGoing' (lifted holesCmd),             noCompletion),
+  ("fill",      keepGoing' fillCmd,             noCompletion),
   ("list",      keepGoing' listCmd,             noCompletion),
   ("module",    keepGoing moduleCmd,            completeSetModule),
   ("move",      keepGoing' moveCommand,         completeFilename),
@@ -301,80 +300,30 @@ ghciCommands = [
   ]
   where lifted m = \str -> lift (m stdout str)
 
-holesCmd :: Handle -> String -> GHCi ()
-holesCmd h =
-  withHolesInput
-    (\fp line -> do
-       infos <- fmap mod_infos getGHCiState
-       mname <- guessModule infos fp
-       case mname of
-         Nothing ->
-           liftIO
-             (hPutStrLn
-                h
-                "Couldn't guess the module name. Is this module loaded?")
-         Just name -> do
-           loaded <- getModuleGraph >>= filterM (GHC.isLoaded . GHC.ms_mod_name)
-           case find ((== name) . GHC.ms_mod_name) loaded of
-             Nothing ->
-               liftIO
-                 (hPutStrLn
-                    h
-                    "Couldn't guess the module name. Is this module loaded?")
-             Just module' -> do
-               completable <- Completion.getCompletableModule module'
-               case Completion.declarationByLine
-                      completable
-                      (Completion.LineNumber line) of
-                 Nothing ->
-                   liftIO
-                     (hPutStrLn
-                        h
-                        ("Unable to locate declaration containing line " ++
-                         show line))
-                 Just declaration -> do
-                   df <- GHC.getSessionDynFlags
-                   mapM_
-                     (liftIO .
-                      hPutStrLn h .
-                      (\hole ->
-                         let rs = Completion.holeRealSrcSpan hole
-                         in unwords
-                              [ show (srcSpanStartLine rs)
-                              , show (srcSpanStartCol rs)
-                              , show (occNameString (Completion.holeName hole))
-                              ]))
-                     (Completion.declarationHoles df declaration))
-
-fillCmd :: Handle -> String -> GHCi ()
-fillCmd h =
+fillCmd :: String -> InputT GHCi ()
+fillCmd =
   withFillInput
     (\fp line col -> do
        infos <- fmap mod_infos getGHCiState
        mname <- guessModule infos fp
        case mname of
          Nothing ->
-           liftIO
-             (hPutStrLn
-                h
-                "Couldn't guess the module name. Is this module loaded?")
+           liftIO (putStrLn "Couldn't guess that module name. Does it exist?")
          Just name -> do
-           loaded <- getModuleGraph >>= filterM (GHC.isLoaded . GHC.ms_mod_name)
-           case find ((== name) . GHC.ms_mod_name) loaded of
+           case M.lookup name infos of
              Nothing ->
                liftIO
-                 (hPutStrLn
-                    h
+                 (putStrLn
                     "Couldn't guess the module name. Is this module loaded?")
              Just module' -> do
-               completable <- Completion.getCompletableModule module'
+               completable <-
+                 Completion.getCompletableModule (modinfoSummary module')
                case Completion.declarationByLine
                       completable
                       (Completion.LineNumber line) of
                  Nothing ->
                    liftIO
-                     (hPutStrLn
-                        h
+                     (putStrLn
                         ("Unable to locate declaration containing line " ++
                          show line))
                  Just declaration -> do
@@ -391,19 +340,13 @@ fillCmd h =
                        mapM_
                          (\sub ->
                             liftIO
-                              (hPutStrLn h (Completion.substitutionString sub)))
+                              (putStrLn (Completion.substitutionString sub)))
                          subs)
 
-withHolesInput :: (FilePath -> Int -> GHCi ()) -> String -> GHCi ()
-withHolesInput cont input =
-  case words input of
-    [read -> name, read -> line] -> cont name line
-    _ -> liftIO (putStrLn "Invalid :holes call. Should be :holes <filename> <line number>")
-
-withFillInput :: (FilePath -> Int -> Int -> GHCi ()) -> String -> GHCi ()
+withFillInput :: (FilePath -> Int -> Int -> GHCi ()) -> String -> InputT GHCi ()
 withFillInput cont input =
   case words input of
-    [read -> name, read -> line, read -> col] -> cont name line col
+    [read -> name, read -> line, read -> col] -> lift (cont name line col)
     _ -> liftIO (putStrLn "Invalid :fill call. Should be :fill <filename> <line number> <column number>")
 
 readOnlyCommands :: [(String, Handle -> String -> GHCi ())]
@@ -413,8 +356,6 @@ readOnlyCommands =
   , ("uses", findAllUses)
   , ("loc-at", locationAt)
   , ("complete-at", completeAt)
-  , ("fill", fillCmd)
-  , ("holes", holesCmd)
   ]
 
 -- We initialize readline (in the interactiveUI function) to use
