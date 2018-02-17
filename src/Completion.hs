@@ -51,11 +51,11 @@ import           Var
 
 timed :: MonadIO m => String -> m a -> m a
 timed label m = do
-  liftIO (putStrLn ("Starting " ++ label ++ " ... "))
+  -- liftIO (putStrLn ("Starting " ++ label ++ " ... "))
   start <- liftIO getCurrentTime
   !v <- m
   end <- liftIO getCurrentTime
-  liftIO (putStrLn (label ++ " took " ++ formatDiff (diffUTCTime end start)))
+  -- liftIO (putStrLn (label ++ " took " ++ formatDiff (diffUTCTime end start)))
   pure v
 
 formatDiff :: NominalDiffTime -> String
