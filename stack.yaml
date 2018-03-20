@@ -1,12 +1,35 @@
-resolver: lts-10.0
+resolver: ghc-8.4.1
 packages:
 - '.'
-extra-deps: []
-flags: {}
-extra-package-dbs: []
-nix:
-  packages: [ ncurses clang ]
-
+- location:
+    git: https://github.com/kazu-yamamoto/network.git
+    commit: 2e98333fb56310b7ca10d37289e0dd63a1e2af11
+  extra-dep: true
+extra-deps:
+- ghc-paths-0.1.0.9
+#- network-2.6.3.4
+- random-1.1
+- syb-0.7
+- hspec-2.4.8
+- regex-compat-0.95.1
+- temporary-1.2.1.1
+- HUnit-1.6.0.0
+- QuickCheck-2.11.3
+- call-stack-0.1.0
+- exceptions-0.9.0
+- hspec-core-2.4.8
+- hspec-discover-2.4.8
+- hspec-expectations-0.8.2
+- regex-base-0.93.2
+- regex-posix-0.95.2
+- ansi-terminal-0.8.0.2
+- quickcheck-io-0.2.0
+- setenv-0.1.1.3
+- tf-random-0.5
+- transformers-compat-0.6.0.6
+- colour-2.3.4
+- primitive-0.6.3.0
+- base-compat-0.9.3
 
 setup-info:
   ghc:
