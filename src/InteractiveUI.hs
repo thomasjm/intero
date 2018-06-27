@@ -28,6 +28,7 @@ module InteractiveUI (
 
 
 -- Intero
+import qualified Track
 import Intero.Compat
 #if __GLASGOW_HASKELL__ >= 800
 import           GHCi
@@ -294,6 +295,7 @@ ghciCommands = [
   ("type",      keepGoing' (lifted typeOfExpr),          completeExpression),
   ("type-at",   keepGoing' (lifted typeAt),              noCompletion),
   ("all-types", keepGoing' (lifted allTypes),            noCompletion),
+  ("throws", keepGoing' (lifted trackPartialsCmd),            noCompletion),
   ("uses",      keepGoing' (lifted findAllUses),         noCompletion),
   ("loc-at",    keepGoing' (lifted locationAt),          noCompletion),
   ("complete-at", keepGoing' (lifted completeAt),          noCompletion),
@@ -356,6 +358,7 @@ readOnlyCommands :: [(String, Handle -> String -> GHCi ())]
 readOnlyCommands =
   [ ("type-at", typeAt)
   , ("all-types", allTypes)
+  , ("throws", trackPartialsCmd)
   , ("uses", findAllUses)
   , ("loc-at", locationAt)
   , ("complete-at", completeAt)
@@ -460,6 +463,7 @@ defFullHelpText =
   "                               text is used for when the span is out of date\n" ++
   "   :all-types                  return a list of all types in the project including\n" ++
   "                               sub-expressions and local bindings\n" ++
+  "   :throws             produce a dump of partial functions\n" ++
   "   :undef <cmd>                undefine user-defined command :<cmd>\n" ++
   "   :!<command>                 run the shell command <command>\n" ++
   "\n" ++
@@ -1997,6 +2001,15 @@ findAllUses h str =
           "," ++
           show (srcSpanEndCol span') ++
           ")"
+
+-----------------------------------------------------------------------------
+-- :throws
+
+trackPartialsCmd :: Handle -> String -> GHCi ()
+trackPartialsCmd h _ =
+  handleSourceError
+    GHC.printException
+    Track.trackThrows
 
 -----------------------------------------------------------------------------
 -- :all-types
