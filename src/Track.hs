@@ -39,7 +39,7 @@ data BindingId = BindingId
   { bindingIdPackage :: String
   , bindingIdModule :: String
   , bindingIdName :: String
-  } deriving (Show)
+  } deriving (Show, Ord, Eq)
 
 prettyBindingId :: BindingId -> String
 prettyBindingId (BindingId pkg md name) = pkg ++ ":" ++ md ++ "." ++ name
